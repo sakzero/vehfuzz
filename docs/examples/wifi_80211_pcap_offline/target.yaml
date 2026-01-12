@@ -1,0 +1,6 @@
+target:
+  name: offline-wifi
+  entrypoint: radiotap
+  adapter:
+    type: null
+

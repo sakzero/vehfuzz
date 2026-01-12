@@ -1,0 +1,28 @@
+campaign:
+  name: j1939-live-demo
+  protocol: j1939
+  mode: live
+  cases: 200
+  interval_s: 0.01
+  rx_timeout_s: 0.2
+  require_rx: false
+  rng_seed: 7
+  seed:
+    type: inline_hex
+    values:
+      - "0000000000000000"
+      - "0102030405060708"
+      - "ffffffffffffffff"
+  mutators:
+    - type: bitflip
+      probability: 0.01
+    - type: havoc
+      max_ops: 2
+  protocol_config:
+    # Example: Request PGN (0x00EA00) to DA 0x80
+    pgn: 0x00EA00
+    source_address: 0xF9
+    destination_address: 0x80
+    pad_to_len: 8
+    pad_byte: 0xFF
+

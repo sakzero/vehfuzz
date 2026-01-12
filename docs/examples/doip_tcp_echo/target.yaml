@@ -1,0 +1,9 @@
+target:
+  name: sim-doip-tcp
+  entrypoint: tcp
+  adapter:
+    type: tcp
+    host: 127.0.0.1
+    port: 30510
+    connect_timeout_s: 5
+

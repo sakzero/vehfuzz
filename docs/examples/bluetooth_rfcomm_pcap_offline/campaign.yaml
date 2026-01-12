@@ -1,0 +1,16 @@
+campaign:
+  name: bluetooth-rfcomm-pcap-offline-demo
+  protocol: bluetooth
+  protocol_config:
+    layer: rfcomm
+    preserve_rfcomm_info_len: true
+  mode: offline
+  cases: 200
+  rng_seed: 10
+  seed:
+    type: pcap
+    path: ../../../samples/sample_bt_rfcomm.pcap
+  mutators:
+    - type: havoc
+      max_ops: 4
+

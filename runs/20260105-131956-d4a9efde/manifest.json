@@ -1,0 +1,28 @@
+{
+  "tool": {
+    "name": "vehfuzz",
+    "version": "0.1.0"
+  },
+  "run_id": "20260105-131956-d4a9efde",
+  "created_at": "2026-01-05T13:19:56.105482+00:00",
+  "config_dir": "E:\\江淮\\fuzz\\vehfuzz\\docs\\examples\\bluetooth_pcap_offline",
+  "runs_dir": "E:\\江淮\\fuzz\\vehfuzz\\runs",
+  "configs": [
+    {
+      "name": "campaign.yaml",
+      "path": "E:\\江淮\\fuzz\\vehfuzz\\docs\\examples\\bluetooth_pcap_offline\\campaign.yaml",
+      "sha256": "ac845a79865d5efd8e7169ad21b73c5fc03d510288fde06f07db095680ef8d6e"
+    },
+    {
+      "name": "oracle.yaml",
+      "path": "E:\\江淮\\fuzz\\vehfuzz\\docs\\examples\\bluetooth_pcap_offline\\oracle.yaml",
+      "sha256": "da5713930eea9064326b899009c48971760f7fb4169baf5225b5e3d69a2310ec"
+    },
+    {
+      "name": "target.yaml",
+      "path": "E:\\江淮\\fuzz\\vehfuzz\\docs\\examples\\bluetooth_pcap_offline\\target.yaml",
+      "sha256": "5db0731a76754c627dc581291b914422d60e903fd5264539c717edc9e3b6f5dd"
+    }
+  ],
+  "notes": "vehfuzz run"
+}

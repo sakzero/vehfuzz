@@ -1,0 +1,6 @@
+target:
+  name: offline-wifi
+  entrypoint: pcapng
+  adapter:
+    type: null
+

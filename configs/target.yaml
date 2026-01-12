@@ -1,0 +1,8 @@
+target:
+  name: X6
+  entrypoint: OBD
+  adapter:
+    type: socketcan
+    channel: vcan0
+    bitrate: 500000
+

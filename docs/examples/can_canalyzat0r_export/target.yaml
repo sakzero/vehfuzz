@@ -1,0 +1,8 @@
+target:
+  name: sim-can-vcan0-canalyzat0r-export
+  entrypoint: vcan0
+  adapter:
+    type: socketcan
+    channel: vcan0
+    interface: socketcan
+

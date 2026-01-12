@@ -1,0 +1,8 @@
+target:
+  name: someip-sd-udp-local
+  entrypoint: 127.0.0.1:30490
+  adapter:
+    type: udp
+    host: 127.0.0.1
+    port: 30490
+

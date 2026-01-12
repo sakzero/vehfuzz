@@ -1,0 +1,23 @@
+campaign:
+  name: someip-udp-demo
+  protocol: someip
+  mode: live
+  cases: 200
+  interval_s: 0.01
+  rx_timeout_s: 0.2
+  require_rx: true
+  rng_seed: 2
+  seed:
+    type: inline_hex
+    values:
+      - "48656c6c6f"      # Hello
+      - "776f726c64"      # world
+      - "00ff00ff00ff"
+  mutators:
+    - type: havoc
+      max_ops: 3
+  protocol_config:
+    service_id: 0x1234
+    method_id: 0x0001
+    client_id: 0x0001
+    session_id: 0x0001

@@ -1,0 +1,12 @@
+campaign:
+  name: boofuzz-doip-diag-demo
+  engine: boofuzz
+  protocol: doip
+  mode: live
+  boofuzz:
+    script: ../../../scripts/boofuzz/doip_diag_fuzz.py
+    args:
+      - --cases
+      - 200
+    timeout_s: 120
+

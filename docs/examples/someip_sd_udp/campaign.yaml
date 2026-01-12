@@ -1,0 +1,24 @@
+campaign:
+  name: someip-sd-live-demo
+  protocol: someip_sd
+  mode: live
+  cases: 300
+  interval_s: 0.01
+  rx_timeout_s: 0.2
+  require_rx: true
+  rng_seed: 9
+  seed:
+    type: inline_hex
+    # Seed bytes are treated as SD entries array (raw) for now.
+    values:
+      - "01000000000000000000000000000000"
+      - "00000000000000000000000000000000"
+  mutators:
+    - type: havoc
+      max_ops: 4
+  protocol_config:
+    # SOME/IP-SD defaults: service_id=0xFFFF, method_id=0x8100, msg_type=notification
+    unicast: true
+    reboot: false
+    max_entries_len: 64
+

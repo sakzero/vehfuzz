@@ -1,0 +1,36 @@
+CANalyzat0r demo project export (2026-01-05)
+=============
+Project:
+{}
+=============
+PacketSets:
+{}
+-------------
+=============
+Packets:
+{
+    "CANID": "7E0",
+    "data": "022701",
+    "iface": "vcan0",
+    "id": "001",
+    "length": 3,
+    "packetSetID": 1,
+    "timestamp": ""
+}
+-------------
+{
+    "CANID": "7E8",
+    "data": "067101112233",
+    "iface": "vcan0",
+    "id": "002",
+    "length": 6,
+    "packetSetID": 1,
+    "timestamp": ""
+}
+-------------
+=============
+KnownPackets:
+{}
+-------------
+=============
+

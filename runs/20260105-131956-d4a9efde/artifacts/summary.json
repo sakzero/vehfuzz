@@ -1,0 +1,25 @@
+{
+  "run_id": "20260105-131956-d4a9efde",
+  "campaign": "bluetooth-pcap-offline-demo",
+  "mode": "offline",
+  "protocol": "bluetooth",
+  "rng_seed": 6,
+  "seed_type": "pcap",
+  "offline_artifact": "mutated.pcap",
+  "stats": {
+    "cases": 200,
+    "tx": 0,
+    "rx": 0,
+    "errors": 0,
+    "anomalies": 0,
+    "duration_s": 0.005998849868774414
+  },
+  "oracle": {
+    "type": "basic",
+    "tx": 0,
+    "rx": 0,
+    "errors": 0,
+    "anomalies": 0,
+    "anomaly_samples": []
+  }
+}

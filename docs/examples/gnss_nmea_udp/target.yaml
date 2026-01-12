@@ -1,0 +1,8 @@
+target:
+  name: sim-gnss-udp
+  entrypoint: udp
+  adapter:
+    type: udp
+    host: 127.0.0.1
+    port: 30511
+

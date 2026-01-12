@@ -1,0 +1,12 @@
+campaign:
+  name: bluetooth-pcap-offline-demo
+  protocol: bluetooth
+  mode: offline
+  cases: 200
+  rng_seed: 6
+  seed:
+    type: pcap
+    path: ../../../samples/sample_eth.pcap
+  mutators:
+    - type: havoc
+      max_ops: 4

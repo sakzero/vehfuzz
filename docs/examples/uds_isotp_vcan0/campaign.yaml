@@ -1,0 +1,24 @@
+campaign:
+  name: uds-isotp-demo
+  protocol: uds
+  mode: live
+  cases: 200
+  interval_s: 0.02
+  rx_timeout_s: 0.5
+  require_rx: true
+  rng_seed: 7
+  seed:
+    type: inline_hex
+    values:
+      - "3e00"        # TesterPresent
+      - "1001"        # DiagnosticSessionControl
+      - "22f190"      # ReadDataByIdentifier (F190)
+      - "2701"        # SecurityAccess requestSeed
+  mutators:
+    - type: bitflip
+      probability: 0.01
+    - type: havoc
+      max_ops: 2
+  protocol_config:
+    max_len: 64
+

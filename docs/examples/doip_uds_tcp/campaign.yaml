@@ -1,0 +1,22 @@
+campaign:
+  name: doip-uds-demo
+  protocol: uds
+  mode: live
+  cases: 200
+  interval_s: 0.02
+  rx_timeout_s: 0.5
+  require_rx: true
+  rng_seed: 8
+  seed:
+    type: inline_hex
+    values:
+      - "3e00"
+      - "1001"
+      - "22f190"
+      - "2701"
+  mutators:
+    - type: havoc
+      max_ops: 2
+  protocol_config:
+    max_len: 128
+

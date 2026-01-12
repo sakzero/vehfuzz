@@ -1,0 +1,3 @@
+# Optional: DBC parsing/encoding support for `protocol: can_dbc`
+cantools
+

@@ -1,0 +1,6 @@
+target:
+  name: offline-bluetooth
+  entrypoint: pcap
+  adapter:
+    type: null
+

@@ -1,0 +1,12 @@
+campaign:
+  name: wifi-pcap-offline-demo
+  protocol: wifi
+  mode: offline
+  cases: 200
+  rng_seed: 5
+  seed:
+    type: pcap
+    path: ../../../samples/sample_eth.pcap
+  mutators:
+    - type: havoc
+      max_ops: 4

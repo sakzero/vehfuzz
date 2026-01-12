@@ -1,0 +1,16 @@
+campaign:
+  name: gnss-nmea-udp-demo
+  protocol: gnss
+  mode: live
+  cases: 200
+  interval_s: 0.05
+  rx_timeout_s: 0.0
+  rng_seed: 4
+  seed:
+    type: nmea
+    path: ../../../samples/nmea_seeds.txt
+  mutators:
+    - type: havoc
+      max_ops: 2
+  protocol_config:
+    max_body_len: 120

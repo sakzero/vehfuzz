@@ -1,0 +1,10 @@
+# Optional: dependencies for running vendored `fuzz/boofuzz` scripts via `campaign.engine: boofuzz`.
+attrs
+click
+colorama
+Flask
+funcy
+psutil
+pydot
+pyserial
+tornado

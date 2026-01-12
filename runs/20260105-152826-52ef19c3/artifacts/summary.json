@@ -1,0 +1,26 @@
+{
+  "run_id": "20260105-152826-52ef19c3",
+  "campaign": "skeleton-offline",
+  "engine": "vehfuzz",
+  "mode": "offline",
+  "protocol": "raw",
+  "rng_seed": 2395347558,
+  "seed_type": "hex",
+  "offline_artifact": "mutated.hex",
+  "stats": {
+    "cases": 50,
+    "tx": 0,
+    "rx": 0,
+    "errors": 0,
+    "anomalies": 0,
+    "duration_s": 0.0060002803802490234
+  },
+  "oracle": {
+    "type": "basic",
+    "tx": 0,
+    "rx": 0,
+    "errors": 0,
+    "anomalies": 0,
+    "anomaly_samples": []
+  }
+}

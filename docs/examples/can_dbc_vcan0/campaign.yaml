@@ -1,0 +1,22 @@
+campaign:
+  name: can-dbc-signal-demo
+  protocol: can_dbc
+  mode: live
+  cases: 200
+  interval_s: 0.01
+  rx_timeout_s: 0.0
+  require_rx: false
+  rng_seed: 8
+  seed:
+    type: inline_hex
+    values:
+      - "0000000000000000"
+  mutators:
+    - type: havoc
+      max_ops: 4
+  protocol_config:
+    dbc_path: demo.dbc
+    frame_id: 0x123
+    min_signals: 1
+    max_signals: 2
+

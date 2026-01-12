@@ -1,0 +1,8 @@
+target:
+  name: j1939-vcan0
+  entrypoint: vcan0
+  adapter:
+    type: socketcan
+    channel: vcan0
+    interface: socketcan
+

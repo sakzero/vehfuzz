@@ -1,0 +1,13 @@
+target:
+  name: uds-isotp-vcan0
+  entrypoint: OBD-vcan0
+  adapter:
+    type: isotp
+    channel: vcan0
+    interface: socketcan
+    tx_id: 0x7E0
+    rx_id: 0x7E8
+    pad_byte: 0x00
+    fc_timeout_s: 0.5
+    tx_timeout_s: 2.0
+

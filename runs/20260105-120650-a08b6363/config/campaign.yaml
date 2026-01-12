@@ -1,0 +1,14 @@
+campaign:
+  name: skeleton-offline
+  protocol: raw
+  mode: offline
+  cases: 50
+  seed:
+    type: hex
+    path: ../samples/raw_seeds.hex
+  mutators:
+    - type: bitflip
+      probability: 0.01
+    - type: havoc
+      max_ops: 3
+  notes: "offline skeleton: mutate bytes and emit artifacts"

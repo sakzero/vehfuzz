@@ -1,0 +1,12 @@
+campaign:
+  name: boofuzz-someip-udp-demo
+  engine: boofuzz
+  protocol: someip
+  mode: live
+  boofuzz:
+    script: ../../../scripts/boofuzz/someip_udp_fuzz.py
+    args:
+      - --cases
+      - 300
+    timeout_s: 120
+

@@ -1,0 +1,8 @@
+campaign:
+  name: skeleton
+  mode: offline_or_sim
+  duration_seconds: 60
+  rate_limit:
+    max_msgs_per_sec: 100
+  notes: "skeleton only: no real fuzzing yet"
+

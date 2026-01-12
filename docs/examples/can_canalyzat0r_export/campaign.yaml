@@ -1,0 +1,19 @@
+campaign:
+  name: can-canalyzat0r-export-demo
+  engine: vehfuzz
+  protocol: can
+  mode: live
+  cases: 200
+  interval_s: 0.01
+  rx_timeout_s: 0.2
+  require_rx: false
+  rng_seed: 1
+  seed:
+    type: canalyzat0r_export
+    path: canalyzat0r_export.txt
+  mutators:
+    - type: bitflip
+      probability: 0.01
+    - type: havoc
+      max_ops: 2
+

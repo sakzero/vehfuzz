@@ -1,0 +1,25 @@
+{
+  "run_id": "20260105-122747-52ef19c3",
+  "campaign": "skeleton-offline",
+  "mode": "offline",
+  "protocol": "raw",
+  "rng_seed": 2384509025,
+  "seed_type": "hex",
+  "offline_artifact": "mutated.hex",
+  "stats": {
+    "cases": 50,
+    "tx": 0,
+    "rx": 0,
+    "errors": 0,
+    "anomalies": 0,
+    "duration_s": 0.003599882125854492
+  },
+  "oracle": {
+    "type": "basic",
+    "tx": 0,
+    "rx": 0,
+    "errors": 0,
+    "anomalies": 0,
+    "anomaly_samples": []
+  }
+}

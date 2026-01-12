@@ -1,0 +1,8 @@
+oracle:
+  name: basic
+  rules:
+    - type: heartbeat_timeout
+      timeout_seconds: 2
+    - type: error_frame_rate
+      threshold_per_sec: 10
+

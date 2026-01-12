@@ -1,0 +1,20 @@
+campaign:
+  name: doip-tcp-demo
+  protocol: doip
+  mode: live
+  cases: 200
+  interval_s: 0.01
+  rx_timeout_s: 0.2
+  require_rx: true
+  rng_seed: 3
+  seed:
+    type: inline_hex
+    values:
+      - "1003"            # arbitrary payload bytes
+      - "2201f190"        # (looks like UDS ReadDataByIdentifier, demo only)
+      - "3e00"            # tester present (demo only)
+  mutators:
+    - type: havoc
+      max_ops: 3
+  protocol_config:
+    payload_type: 0x8001

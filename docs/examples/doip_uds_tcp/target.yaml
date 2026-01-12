@@ -1,0 +1,13 @@
+target:
+  name: doip-uds-tcp
+  entrypoint: doip
+  adapter:
+    type: doip
+    host: 127.0.0.1
+    port: 13400
+    timeout_s: 2.0
+    tester_addr: 0x0E00
+    ecu_addr: 0x0E01
+    routing_activation: true
+    activation_type: 0x00
+
