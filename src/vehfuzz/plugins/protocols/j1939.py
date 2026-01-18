@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
+from vehfuzz.core.parsed import ByteRange, ParsedMessage
 from vehfuzz.core.plugins import Message, Protocol, register_protocol
 
 
@@ -50,9 +51,21 @@ def parse_j1939_id(can_id: int) -> J1939Id:
     )
 
 
+@dataclass
+class _TpReassembly:
+    pgn: int
+    total_len: int
+    total_packets: int
+    destination_address: int | None
+    next_seq: int = 1
+    buf: bytearray = field(default_factory=bytearray)
+
+
 class _J1939Protocol(Protocol):
     def __init__(self, config: dict[str, Any]) -> None:
         self._cfg = config
+        # Keyed by (source_address, destination_address, target_pgn)
+        self._tp_states: dict[tuple[int, int | None, int], _TpReassembly] = {}
 
     def build_tx(self, seed: Message, mutated: bytes) -> Message:
         cfg = self._cfg
@@ -121,8 +134,141 @@ class _J1939Protocol(Protocol):
         )
         return Message(data=data, meta=out_meta)
 
+    def parse(self, msg: Message) -> ParsedMessage:
+        can_id = msg.meta.get("can_id")
+        try:
+            can_id_i = int(can_id) if can_id is not None else None
+        except Exception:
+            can_id_i = None
+        if can_id_i is None:
+            return ParsedMessage(protocol="j1939", level="raw", ok=False, reason="missing_can_id", fields={"len": len(msg.data)})
+        j = parse_j1939_id(can_id_i)
+
+        data = bytes(msg.data)
+        # J1939 Transport Protocol (TP):
+        # - TP.CM: PGN 0x00EC00
+        # - TP.DT: PGN 0x00EB00
+        if j.pgn == 0x00EC00 and len(data) >= 8:
+            control = int(data[0])
+            total_len = int.from_bytes(data[1:3], "little")
+            total_packets = int(data[3])
+            max_packets = int(data[4])
+            target_pgn = int.from_bytes(data[5:8], "little") & 0x3FFFF
+            da = j.destination_address
+
+            # BAM(0x20) and RTS(0x10) initiate transfer.
+            if control in (0x20, 0x10) and total_len > 0 and total_packets > 0:
+                key = (j.source_address, da, target_pgn)
+                self._tp_states[key] = _TpReassembly(
+                    pgn=target_pgn,
+                    total_len=total_len,
+                    total_packets=total_packets,
+                    destination_address=da,
+                )
+
+            return ParsedMessage(
+                protocol="j1939",
+                level="app",
+                ok=True,
+                flow_key=f"j1939:tp_cm:pgn=0x{target_pgn:x}",
+                fields={
+                    "can_id": can_id_i,
+                    "pgn": j.pgn,
+                    "priority": j.priority,
+                    "source_address": j.source_address,
+                    "destination_address": da,
+                    "tp": {
+                        "type": "cm",
+                        "control": control,
+                        "total_len": total_len,
+                        "total_packets": total_packets,
+                        "max_packets": max_packets,
+                        "target_pgn": target_pgn,
+                    },
+                    "len": len(data),
+                },
+                payload=ByteRange(0, len(data)),
+            )
+
+        if j.pgn == 0x00EB00 and len(data) >= 2:
+            seq = int(data[0])
+            chunk = data[1:8]
+            da = j.destination_address
+
+            # Find matching transfer for this SA/DA.
+            candidates = [k for k in self._tp_states.keys() if k[0] == j.source_address and k[1] == da]
+            if candidates:
+                key = candidates[0]
+                st = self._tp_states[key]
+                if seq != st.next_seq:
+                    del self._tp_states[key]
+                else:
+                    st.next_seq += 1
+                    st.buf.extend(chunk)
+                    if len(st.buf) >= st.total_len or seq >= st.total_packets:
+                        payload = bytes(st.buf[: st.total_len])
+                        del self._tp_states[key]
+                        return ParsedMessage(
+                            protocol="j1939",
+                            level="app",
+                            ok=True,
+                            flow_key=f"j1939:tp:pgn=0x{st.pgn:x}",
+                            fields={
+                                "can_id": can_id_i,
+                                "pgn": j.pgn,
+                                "priority": j.priority,
+                                "source_address": j.source_address,
+                                "destination_address": da,
+                                "tp": {
+                                    "type": "dt",
+                                    "seq": seq,
+                                    "reassembly_complete": True,
+                                    "target_pgn": st.pgn,
+                                    "total_len": st.total_len,
+                                    "total_packets": st.total_packets,
+                                },
+                                "tp_payload_hex": payload.hex(),
+                                "len": len(data),
+                            },
+                            payload=ByteRange(0, len(data)),
+                        )
+
+            return ParsedMessage(
+                protocol="j1939",
+                level="app",
+                ok=True,
+                flow_key="j1939:tp_dt",
+                fields={
+                    "can_id": can_id_i,
+                    "pgn": j.pgn,
+                    "priority": j.priority,
+                    "source_address": j.source_address,
+                    "destination_address": da,
+                    "tp": {"type": "dt", "seq": seq},
+                    "len": len(data),
+                },
+                payload=ByteRange(0, len(data)),
+            )
+
+        return ParsedMessage(
+            protocol="j1939",
+            level="l2",
+            ok=True,
+            flow_key=f"j1939:pgn=0x{j.pgn:x}",
+            fields={
+                "can_id": can_id_i,
+                "pgn": j.pgn,
+                "priority": j.priority,
+                "source_address": j.source_address,
+                "destination_address": j.destination_address,
+                "pdu_format": j.pdu_format,
+                "pdu_specific": j.pdu_specific,
+                "len": len(msg.data),
+            },
+            payload=ByteRange(0, len(msg.data)),
+        )
+
 
 @register_protocol("j1939")
 def j1939_protocol(config: dict[str, Any]) -> Protocol:
     return _J1939Protocol(config)
-

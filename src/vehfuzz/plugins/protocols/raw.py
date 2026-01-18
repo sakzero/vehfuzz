@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from vehfuzz.core.plugins import Message, Protocol, register_protocol
+from vehfuzz.core.parsed import ByteRange, ParsedMessage
 
 
 class _RawProtocol(Protocol):
@@ -15,6 +16,16 @@ class _RawProtocol(Protocol):
         meta.setdefault("seed_len", len(seed.data))
         meta.setdefault("mutated_len", len(mutated))
         return Message(data=mutated, meta=meta)
+
+    def parse(self, msg: Message) -> ParsedMessage:
+        return ParsedMessage(
+            protocol="raw",
+            level="raw",
+            ok=True,
+            flow_key="raw",
+            fields={"len": len(msg.data)},
+            payload=ByteRange(0, len(msg.data)),
+        )
 
 
 @register_protocol("raw")

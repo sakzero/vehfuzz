@@ -13,6 +13,7 @@ from vehfuzz.core.boofuzz_runner import run_boofuzz_campaign
 from vehfuzz.core.corpus import load_seed_messages
 from vehfuzz.core.offline import create_offline_sink
 from vehfuzz.core.mutators import mutate_bytes
+from vehfuzz.core.parsed import ParsedMessage
 from vehfuzz.core.plugins import Message, create_adapter, create_oracle, create_protocol, load_builtin_plugins
 
 
@@ -25,6 +26,42 @@ class RunStats:
     anomalies: int
     duration_s: float
     offline_artifact: str | None = None
+
+
+def _safe_parse(protocol: Any, msg: Message) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        parsed = getattr(protocol, "parse", None)
+        if parsed is None:
+            return None, None
+        out = parsed(msg)
+        if out is None:
+            return None, None
+        if isinstance(out, ParsedMessage):
+            return out.to_dict(), None
+        if isinstance(out, dict):
+            return out, None
+        return {"protocol": "unknown", "ok": False, "reason": f"invalid_parse_return:{type(out).__name__}"}, None
+    except Exception as e:
+        return None, str(e)
+
+
+def _payload_hex(msg: Message, parsed: dict[str, Any] | None) -> str | None:
+    if not parsed:
+        return None
+    payload = parsed.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    try:
+        off = int(payload.get("offset", 0))
+        ln = int(payload.get("length", 0))
+    except Exception:
+        return None
+    if off < 0 or ln <= 0:
+        return None
+    data = bytes(msg.data)
+    if off >= len(data):
+        return None
+    return data[off : off + ln].hex()
 
 
 def run_campaign(
@@ -156,6 +193,9 @@ def run_campaign(
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "protocol": protocol_type,
             }
+
+            parsed_tx, parsed_tx_err = _safe_parse(protocol, tx_msg)
+            tx_payload_hex = _payload_hex(tx_msg, parsed_tx)
             events.log(
                 {
                     **evt_base,
@@ -165,19 +205,46 @@ def run_campaign(
                     "seed_hex": seed.data.hex(),
                     "mutated_hex": mutation.mutated.hex(),
                     "ops": mutation.ops,
+                    "tx_len": len(tx_msg.data),
+                    "tx_hex": tx_msg.data.hex(),
+                    "tx_meta": tx_msg.meta,
+                    "tx_parsed": parsed_tx,
+                    "tx_parse_error": parsed_tx_err,
+                    "tx_payload_hex": tx_payload_hex,
                 }
             )
 
             if adapter is None:
                 assert offline_sink is not None
                 offline_sink.emit(tx_msg)
+                events.log(
+                    {
+                        **evt_base,
+                        "event": "tx_offline",
+                        "len": len(tx_msg.data),
+                        "hex": tx_msg.data.hex(),
+                        "meta": tx_msg.meta,
+                        "parsed": parsed_tx,
+                        "payload_hex": tx_payload_hex,
+                    }
+                )
                 continue
 
             try:
                 adapter.send(tx_msg)
                 tx += 1
                 oracle.on_tx(case_id=case_id, msg=tx_msg)
-                events.log({**evt_base, "event": "tx", "len": len(tx_msg.data), "hex": tx_msg.data.hex(), "meta": tx_msg.meta})
+                events.log(
+                    {
+                        **evt_base,
+                        "event": "tx",
+                        "len": len(tx_msg.data),
+                        "hex": tx_msg.data.hex(),
+                        "meta": tx_msg.meta,
+                        "parsed": parsed_tx,
+                        "payload_hex": tx_payload_hex,
+                    }
+                )
             except Exception as e:
                 errors += 1
                 oracle.on_error(case_id=case_id, error=str(e))
@@ -197,7 +264,20 @@ def run_campaign(
             if resp is not None:
                 rx += 1
                 oracle.on_rx(case_id=case_id, msg=resp)
-                events.log({**evt_base, "event": "rx", "len": len(resp.data), "hex": resp.data.hex(), "meta": resp.meta})
+                parsed_rx, parsed_rx_err = _safe_parse(protocol, resp)
+                rx_payload_hex = _payload_hex(resp, parsed_rx)
+                events.log(
+                    {
+                        **evt_base,
+                        "event": "rx",
+                        "len": len(resp.data),
+                        "hex": resp.data.hex(),
+                        "meta": resp.meta,
+                        "parsed": parsed_rx,
+                        "parse_error": parsed_rx_err,
+                        "payload_hex": rx_payload_hex,
+                    }
+                )
             else:
                 if bool(campaign_cfg.get("require_rx", False)) and rx_timeout_s > 0:
                     oracle.on_error(case_id=case_id, error="rx_timeout")

@@ -60,13 +60,17 @@ class _IsoTpSocketCanAdapter(Adapter):
         tx_timeout_s = float(self._cfg.get("tx_timeout_s", 2.0))
 
         start = time.time()
-        if len(payload) <= 7:
-            self._send_can(tx_id, build_sf(payload, pad_byte=self._pad))
+        frame_len = int(self._cfg.get("frame_len", 64 if self._fd else 8))
+        if frame_len not in (8, 12, 16, 20, 24, 32, 48, 64):
+            frame_len = 64 if self._fd else 8
+
+        if len(payload) <= 7 or (self._fd and len(payload) <= max(0, frame_len - 2)):
+            self._send_can(tx_id, build_sf(payload, frame_len=frame_len, pad_byte=self._pad))
             return
 
         # Multi-frame request: send FF then wait FC then send CF.
         total_len = len(payload)
-        self._send_can(tx_id, build_ff(payload, total_len=total_len, pad_byte=self._pad))
+        self._send_can(tx_id, build_ff(payload, total_len=total_len, frame_len=frame_len, pad_byte=self._pad))
 
         fc = self._wait_for_fc(rx_id=rx_id, timeout_s=fc_timeout_s)
         if fc is None:
@@ -80,14 +84,20 @@ class _IsoTpSocketCanAdapter(Adapter):
 
         sent_in_block = 0
         seq = 1
-        offset = 6
+        # First frame carries payload after PCI bytes.
+        if total_len <= 4095:
+            offset = max(0, frame_len - 2)
+        else:
+            offset = max(0, frame_len - 6)
         while offset < total_len:
             if time.time() - start > tx_timeout_s:
                 raise TimeoutError("ISO-TP send timeout")
 
             chunk = payload[offset : offset + 7]
+            max_chunk = max(0, frame_len - 1)
+            chunk = payload[offset : offset + max_chunk]
             offset += len(chunk)
-            self._send_can(tx_id, build_cf(seq, chunk, pad_byte=self._pad))
+            self._send_can(tx_id, build_cf(seq, chunk, frame_len=frame_len, pad_byte=self._pad))
             seq = (seq + 1) & 0xF
 
             if st_delay > 0:
@@ -132,7 +142,10 @@ class _IsoTpSocketCanAdapter(Adapter):
                 # Send Flow Control CTS.
                 bs = int(self._cfg.get("fc_bs", 0))
                 stmin = int(self._cfg.get("fc_stmin", 0))
-                self._send_can(tx_id, build_fc(status=0x0, block_size=bs, stmin=stmin, pad_byte=self._pad))
+                frame_len = int(self._cfg.get("frame_len", 64 if self._fd else 8))
+                if frame_len not in (8, 12, 16, 20, 24, 32, 48, 64):
+                    frame_len = 64 if self._fd else 8
+                self._send_can(tx_id, build_fc(status=0x0, block_size=bs, stmin=stmin, frame_len=frame_len, pad_byte=self._pad))
 
             if complete is not None:
                 return Message(
@@ -154,7 +167,7 @@ class _IsoTpSocketCanAdapter(Adapter):
 
         msg = can.Message(
             arbitration_id=int(can_id),
-            data=data[:8],
+            data=(data[:64] if self._fd else data[:8]),
             is_extended_id=self._is_extended,
             is_fd=self._fd,
             bitrate_switch=self._bitrate_switch,
@@ -192,4 +205,3 @@ class _IsoTpSocketCanAdapter(Adapter):
 @register_adapter("isotp")
 def isotp_adapter(config: dict[str, Any]) -> Adapter:
     return _IsoTpSocketCanAdapter(config)
-

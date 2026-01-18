@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, TypeVar
 
+from vehfuzz.core.parsed import ParsedMessage
+
 
 T = TypeVar("T")
 
@@ -31,6 +33,9 @@ class Adapter(ABC):
 class Protocol(ABC):
     @abstractmethod
     def build_tx(self, seed: Message, mutated: bytes) -> Message: ...
+
+    def parse(self, msg: Message) -> ParsedMessage | None:
+        return None
 
 
 class Oracle(ABC):
@@ -109,4 +114,3 @@ def list_plugins() -> dict[str, list[str]]:
         "protocols": sorted(_PROTOCOLS.keys()),
         "oracles": sorted(_ORACLES.keys()),
     }
-

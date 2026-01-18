@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from vehfuzz.core.parsed import ByteRange, ParsedMessage
 from vehfuzz.core.plugins import Message, Protocol, register_protocol
 from vehfuzz.plugins.protocols.raw import _RawProtocol
 
@@ -59,6 +60,115 @@ def bluetooth_protocol(config: dict[str, Any]) -> Protocol:
 
 
 class _BluetoothHciProtocol(_RawProtocol):
+    def parse(self, msg: Message) -> ParsedMessage:
+        pcap_global = msg.meta.get("pcap_global")
+        if not isinstance(pcap_global, dict):
+            return ParsedMessage(protocol="bluetooth", level="raw", ok=True, fields={"len": len(msg.data)})
+
+        linktype = int(pcap_global.get("network", pcap_global.get("linktype", -1)))
+        if linktype not in (187, 201):
+            return ParsedMessage(protocol="bluetooth", level="raw", ok=True, fields={"len": len(msg.data), "linktype": linktype})
+
+        pkt = bytes(msg.data)
+        phdr_len = 4 if linktype == 201 else 0
+        if linktype == 201 and len(pkt) < 4:
+            return ParsedMessage(protocol="bluetooth", level="raw", ok=False, reason="phdr_too_short", fields={"len": len(pkt)})
+
+        h4 = pkt[phdr_len:]
+        if not h4:
+            return ParsedMessage(protocol="bluetooth", level="raw", ok=False, reason="h4_empty", fields={"len": len(pkt)})
+
+        ptype = int(h4[0])
+        fields: dict[str, Any] = {"linktype": linktype, "ptype": ptype, "len": len(pkt)}
+
+        # HCI Command packet (0x01): opcode(2 LE), plen(1), params.
+        if ptype == 0x01 and len(h4) >= 1 + 3:
+            opcode = int.from_bytes(h4[1:3], "little")
+            plen = int(h4[3])
+            ogf = (opcode >> 10) & 0x3F
+            ocf = opcode & 0x03FF
+            fields.update({"layer": "hci_cmd", "opcode": opcode, "ogf": ogf, "ocf": ocf, "param_len": plen})
+            return ParsedMessage(protocol="bluetooth", level="app", ok=True, flow_key=f"bt:hci:cmd:0x{opcode:04x}", fields=fields, payload=ByteRange(phdr_len + 1 + 3, max(0, min(plen, len(h4) - 4))))
+
+        # HCI Event packet (0x04): evt(1), plen(1), params.
+        if ptype == 0x04 and len(h4) >= 1 + 2:
+            evt = int(h4[1])
+            plen = int(h4[2])
+            fields.update({"layer": "hci_evt", "event_code": evt, "param_len": plen})
+            # Common events: Command Complete (0x0E) / Command Status (0x0F)
+            if evt == 0x0E and plen >= 3 and len(h4) >= 1 + 2 + plen:
+                num = int(h4[3])
+                opcode = int.from_bytes(h4[4:6], "little")
+                fields.update({"cmd_complete": {"num_hci_cmd_pkts": num, "opcode": opcode}})
+            if evt == 0x0F and plen >= 4 and len(h4) >= 1 + 2 + plen:
+                status = int(h4[3])
+                num = int(h4[4])
+                opcode = int.from_bytes(h4[5:7], "little")
+                fields.update({"cmd_status": {"status": status, "num_hci_cmd_pkts": num, "opcode": opcode}})
+            return ParsedMessage(protocol="bluetooth", level="app", ok=True, flow_key=f"bt:hci:evt:0x{evt:02x}", fields=fields, payload=ByteRange(phdr_len + 1 + 2, max(0, min(plen, len(h4) - 3))))
+
+        # Only parse ACL data for deeper layers.
+        if ptype != 0x02 or len(h4) < 1 + 4:
+            return ParsedMessage(protocol="bluetooth", level="l2", ok=True, fields=fields)
+
+        acl_hdr = h4[1:5]
+        handle_flags = int.from_bytes(acl_hdr[0:2], "little")
+        acl_len = int.from_bytes(acl_hdr[2:4], "little")
+        payload = h4[5:]
+        acl_len = min(int(acl_len), len(payload))
+        payload = payload[:acl_len]
+        fields.update({"handle_flags": handle_flags, "acl_len": acl_len})
+
+        if len(payload) < 4:
+            return ParsedMessage(protocol="bluetooth", level="l2", ok=True, fields=fields)
+
+        l2_len = int.from_bytes(payload[0:2], "little")
+        cid = int.from_bytes(payload[2:4], "little")
+        l2_payload = payload[4:]
+        l2_len = min(int(l2_len), len(l2_payload))
+
+        fields.update({"cid": cid, "l2cap_len": l2_len})
+
+        # L2CAP payload slice within the packet.
+        l2_payload_off = phdr_len + 1 + 4 + 4
+        payload_br = ByteRange(l2_payload_off, l2_len)
+        flow_key = f"bt:l2cap:cid=0x{cid:x}"
+
+        # SDP layer detection (best-effort)
+        if l2_len >= 5 and int(l2_payload[0]) in _SDP_PDU_IDS:
+            pdu_id = int(l2_payload[0])
+            txn = int.from_bytes(l2_payload[1:3], "big")
+            param_len = int.from_bytes(l2_payload[3:5], "big")
+            fields.update({"layer": "sdp", "sdp_pdu_id": pdu_id, "sdp_txn": txn, "sdp_param_len": param_len})
+            return ParsedMessage(protocol="bluetooth", level="app", ok=True, flow_key=flow_key, fields=fields, payload=payload_br)
+
+        # RFCOMM UIH detection (best-effort)
+        if l2_len >= 4:
+            addr = int(l2_payload[0])
+            ctrl = int(l2_payload[1])
+            base_ctrl = ctrl & 0xEF
+            if (addr & 0x01) == 0x01 and base_ctrl == 0xEF:
+                dec = _decode_rfcomm_len(l2_payload, 2)
+                rf_len = None
+                rf_hdr_len = None
+                if dec is not None:
+                    rf_len, len_len = dec
+                    rf_hdr_len = 2 + len_len
+                dlci = (addr >> 2) & 0x3F
+                fields.update(
+                    {
+                        "layer": "rfcomm",
+                        "rfcomm_addr": addr,
+                        "rfcomm_ctrl": ctrl,
+                        "rfcomm_dlci": dlci,
+                        "rfcomm_len": rf_len,
+                        "rfcomm_hdr_len": rf_hdr_len,
+                    }
+                )
+                return ParsedMessage(protocol="bluetooth", level="app", ok=True, flow_key=flow_key, fields=fields, payload=payload_br)
+
+        return ParsedMessage(protocol="bluetooth", level="l3", ok=True, flow_key=flow_key, fields=fields, payload=payload_br)
+
     def build_tx(self, seed: Message, mutated: bytes) -> Message:
         pcap_global = seed.meta.get("pcap_global")
         if not isinstance(pcap_global, dict):

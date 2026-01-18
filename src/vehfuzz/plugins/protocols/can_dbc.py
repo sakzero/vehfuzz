@@ -5,6 +5,7 @@ import random
 from pathlib import Path
 from typing import Any
 
+from vehfuzz.core.parsed import ByteRange, ParsedMessage
 from vehfuzz.core.config import resolve_path
 from vehfuzz.core.plugins import Message, Protocol, register_protocol
 
@@ -173,8 +174,37 @@ class _CanDbcProtocol(Protocol):
         )
         return Message(data=data, meta=out_meta)
 
+    def parse(self, msg: Message) -> ParsedMessage:
+        frame_id = msg.meta.get("can_id")
+        try:
+            frame_id_i = int(frame_id) if frame_id is not None else None
+        except Exception:
+            frame_id_i = None
+
+        decoded: dict[str, Any] | None = None
+        err: str | None = None
+        if frame_id_i is not None:
+            try:
+                message = _pick_message(self._db, frame_id=frame_id_i, name=None)
+                decoded = message.decode(bytes(msg.data))
+            except Exception as e:  # pragma: no cover
+                err = str(e)
+
+        fields: dict[str, Any] = {
+            "can_id": frame_id_i,
+            "is_fd": bool(msg.meta.get("is_fd", len(msg.data) > 8)),
+            "len": len(msg.data),
+            "dbc_path": str(self._dbc_path),
+        }
+        if decoded is not None and isinstance(decoded, dict):
+            fields["signals"] = decoded
+        if err:
+            fields["decode_error"] = err
+
+        flow_key = f"can_dbc:0x{frame_id_i:x}" if frame_id_i is not None else "can_dbc"
+        return ParsedMessage(protocol="can_dbc", level="app", ok=True, flow_key=flow_key, fields=fields, payload=ByteRange(0, len(msg.data)))
+
 
 @register_protocol("can_dbc")
 def can_dbc_protocol(config: dict[str, Any]) -> Protocol:
     return _CanDbcProtocol(config)
-
