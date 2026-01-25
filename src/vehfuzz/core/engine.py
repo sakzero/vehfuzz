@@ -13,6 +13,7 @@ from vehfuzz.core.boofuzz_runner import run_boofuzz_campaign
 from vehfuzz.core.corpus import load_seed_messages
 from vehfuzz.core.offline import create_offline_sink
 from vehfuzz.core.mutators import mutate_bytes
+from vehfuzz.core.orchestrator import ChannelGenerator, ChannelRuntime, ContextStore, Orchestrator, Rule
 from vehfuzz.core.parsed import ParsedMessage
 from vehfuzz.core.plugins import Message, create_adapter, create_oracle, create_protocol, load_builtin_plugins
 
@@ -81,8 +82,143 @@ def run_campaign(
     mode = str(campaign_cfg.get("mode", "offline")).lower()
     protocol_type = str(campaign_cfg.get("protocol", "raw")).lower()
 
-    if engine_type not in ("vehfuzz", "boofuzz"):
+    if engine_type not in ("vehfuzz", "boofuzz", "orchestrator"):
         raise ValueError(f"Unsupported campaign.engine: {engine_type}")
+
+    if engine_type == "orchestrator":
+        # Multi-channel orchestrator: channels define their own target/protocol/oracle/seed.
+        events = EventLogger(paths.events_path)
+        start = time.time()
+        try:
+            duration_s = float(campaign_cfg.get("duration_s", 30.0))
+            channels_cfg = campaign_cfg.get("channels", [])
+            if not isinstance(channels_cfg, list) or not channels_cfg:
+                raise ValueError("orchestrator requires campaign.channels as a non-empty list")
+
+            rules_cfg = campaign_cfg.get("rules", [])
+            if rules_cfg is None:
+                rules_cfg = []
+            if not isinstance(rules_cfg, list):
+                raise ValueError("orchestrator requires campaign.rules as a list")
+
+            channels: list[ChannelRuntime] = []
+            for ch in channels_cfg:
+                if not isinstance(ch, dict):
+                    raise ValueError("orchestrator channel must be a mapping")
+                channel_id = str(ch.get("id") or ch.get("channel_id") or "").strip()
+                if not channel_id:
+                    raise ValueError("orchestrator channel requires id")
+
+                # Protocol
+                proto_type = str(ch.get("protocol", "raw")).lower()
+                proto_cfg = ch.get("protocol_config", {}) or {}
+                if not isinstance(proto_cfg, dict):
+                    raise ValueError(f"channel {channel_id}: protocol_config must be a mapping")
+                proto_cfg = dict(proto_cfg)
+                proto_cfg.setdefault("__config_dir", str(config_dir))
+                protocol = create_protocol(proto_type, proto_cfg)
+
+                # Adapter
+                target = ch.get("target", {}) or {}
+                if not isinstance(target, dict):
+                    raise ValueError(f"channel {channel_id}: target must be a mapping")
+                adapter_cfg = target.get("adapter", {}) or {}
+                if not isinstance(adapter_cfg, dict):
+                    raise ValueError(f"channel {channel_id}: target.adapter must be a mapping")
+                adapter_type = str(adapter_cfg.get("type", "null")).lower()
+                adapter = create_adapter(adapter_type, adapter_cfg)
+
+                # Oracle
+                oracle_obj: Any = ch.get("oracle")
+                if oracle_obj is None:
+                    oracle_type = "basic"
+                    oracle_config: dict[str, Any] = {}
+                else:
+                    if not isinstance(oracle_obj, dict):
+                        raise ValueError(f"channel {channel_id}: oracle must be a mapping")
+                    oracle_type = str(oracle_obj.get("type", "basic")).lower()
+                    oracle_config = oracle_obj.get("config", {}) or {}
+                    if not isinstance(oracle_config, dict):
+                        raise ValueError(f"channel {channel_id}: oracle.config must be a mapping")
+                oracle_inst = create_oracle(oracle_type, oracle_config)
+
+                # Seeds
+                seed_cfg = ch.get("seed", {}) or {}
+                if not isinstance(seed_cfg, dict):
+                    raise ValueError(f"channel {channel_id}: seed must be a mapping")
+                seeds = load_seed_messages(config_dir, seed_cfg) if seed_cfg else []
+                if not seeds:
+                    # Allow empty seeds for purely passive receive channels.
+                    seeds = [Message(data=b"", meta={})]
+
+                # Generator
+                gen_cfg = ch.get("generator", {}) or {}
+                if not isinstance(gen_cfg, dict):
+                    raise ValueError(f"channel {channel_id}: generator must be a mapping")
+                gen_type = str(gen_cfg.get("type", "none")).lower()
+                enabled = gen_type == "fuzz"
+                generator = ChannelGenerator(
+                    enabled=enabled,
+                    cases=int(gen_cfg.get("cases", 0)) if enabled else 0,
+                    interval_s=float(gen_cfg.get("interval_s", 0.0)),
+                    rx_timeout_s=float(gen_cfg.get("rx_timeout_s", 0.05)),
+                    mutators=gen_cfg.get("mutators", ch.get("mutators", []) or []) if enabled else [],
+                    rng_seed=gen_cfg.get("rng_seed"),
+                )
+                if enabled and not isinstance(generator.mutators, list):
+                    raise ValueError(f"channel {channel_id}: generator.mutators must be a list")
+
+                channels.append(
+                    ChannelRuntime(
+                        channel_id=channel_id,
+                        adapter=adapter,
+                        protocol=protocol,
+                        oracle=oracle_inst,
+                        seeds=seeds,
+                        protocol_type=proto_type,
+                        generator=generator,
+                    )
+                )
+
+            rules: list[Rule] = []
+            for r in rules_cfg:
+                if not isinstance(r, dict):
+                    raise ValueError("rule must be a mapping")
+                rid = str(r.get("id") or r.get("rule_id") or "").strip()
+                if not rid:
+                    raise ValueError("rule requires id")
+                when = r.get("when", {}) or {}
+                then = r.get("then", []) or []
+                if not isinstance(when, dict):
+                    raise ValueError(f"rule {rid}: when must be a mapping")
+                if not isinstance(then, list):
+                    raise ValueError(f"rule {rid}: then must be a list")
+                rules.append(Rule(rule_id=rid, when=when, then=[t for t in then if isinstance(t, dict)]))
+
+            orch = Orchestrator(
+                run_id=run_id,
+                campaign_name=campaign_name,
+                channels=channels,
+                rules=rules,
+                events=events,
+                context=ContextStore(),
+            )
+            summary = orch.run(duration_s=duration_s)
+        finally:
+            events.close()
+
+        (paths.artifacts_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        duration = max(0.0, time.time() - start)
+        stats = summary.get("stats", {}) if isinstance(summary, dict) else {}
+        return RunStats(
+            cases=int(stats.get("cases", 0)) if isinstance(stats, dict) else 0,
+            tx=int(stats.get("tx", 0)) if isinstance(stats, dict) else 0,
+            rx=int(stats.get("rx", 0)) if isinstance(stats, dict) else 0,
+            errors=int(stats.get("errors", 0)) if isinstance(stats, dict) else 0,
+            anomalies=0,
+            duration_s=duration,
+            offline_artifact=None,
+        )
 
     if engine_type == "boofuzz":
         events = EventLogger(paths.events_path)

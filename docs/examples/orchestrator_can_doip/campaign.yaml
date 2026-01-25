@@ -1,0 +1,54 @@
+campaign:
+  name: orchestrator_can_doip
+  engine: orchestrator
+  duration_s: 10
+
+  # Two-channel example (CAN + DoIP). Both channels are configured as "passive"
+  # by default (generator.type=none). Add generator.type=fuzz if you want active traffic.
+  channels:
+    - id: can
+      protocol: can
+      protocol_config:
+        can_id: 2015   # 0x7DF
+        parse_isotp: true
+      target:
+        adapter:
+          type: socketcan
+          channel: vcan0
+      seed:
+        type: inline_hex
+        values: ["02010d"]
+      generator:
+        type: none
+        rx_timeout_s: 0.05
+
+    - id: doip
+      protocol: doip
+      protocol_config:
+        payload_type: 32769   # 0x8001
+      target:
+        adapter:
+          type: tcp
+          host: 127.0.0.1
+          port: 13400
+      seed:
+        type: inline_hex
+        values: [""]   # DoIP build_tx will wrap payload; empty payload ok for demo
+      generator:
+        type: none
+        rx_timeout_s: 0.05
+
+  # Rule example: when CAN RX contains an ISO-TP reassembled UDS negative response (0x7F),
+  # trigger a DoIP send with a fixed payload.
+  rules:
+    - id: can_nrc_triggers_doip
+      when:
+        channel_id: can
+        event: rx
+        fields:
+          inner_uds:
+            kind: negative_response
+      then:
+        - action: send
+          channel_id: doip
+          mutated_hex: "02f190"  # example UDS payload bytes (wrapped by doip protocol)

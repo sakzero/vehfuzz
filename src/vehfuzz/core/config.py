@@ -26,8 +26,17 @@ def merge_root_dicts(config_items: list[dict[str, Any]]) -> dict[str, Any]:
 def parse_run_config(*, config_dir: Path, merged: dict[str, Any]) -> RunConfig:
     if "campaign" not in merged or not isinstance(merged["campaign"], dict):
         raise ValueError("Missing required config: campaign")
-    if "target" not in merged or not isinstance(merged["target"], dict):
-        raise ValueError("Missing required config: target")
+    campaign = merged["campaign"]
+    engine = str(campaign.get("engine", "vehfuzz")).lower()
+
+    # Single-engine runs require top-level target; orchestrator runs define targets per channel.
+    if "target" not in merged:
+        if engine == "orchestrator":
+            merged["target"] = {}
+        else:
+            raise ValueError("Missing required config: target")
+    if not isinstance(merged["target"], dict):
+        raise ValueError("Invalid config: target must be a mapping")
 
     oracle = merged.get("oracle")
     if oracle is None:
@@ -38,7 +47,7 @@ def parse_run_config(*, config_dir: Path, merged: dict[str, Any]) -> RunConfig:
     return RunConfig(
         config_dir=config_dir,
         target=merged["target"],
-        campaign=merged["campaign"],
+        campaign=campaign,
         oracle=oracle,
     )
 
@@ -50,4 +59,3 @@ def resolve_path(config_dir: Path, maybe_path: str | None) -> Path | None:
     if path.is_absolute():
         return path
     return (config_dir / path).resolve()
-

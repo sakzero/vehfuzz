@@ -133,6 +133,34 @@ class BasicOracleConfig(TypedDict, total=False):
     pass  # No configuration needed
 
 
+# ==================== Orchestrator Schemas ====================
+
+class OrchestratorChannelConfig(TypedDict, total=False):
+    """Configuration schema for one orchestrator channel."""
+    id: Required[str]
+    protocol: str
+    protocol_config: dict[str, Any]
+    target: dict[str, Any]  # target.adapter = {...}
+    oracle: dict[str, Any]  # oracle.type / oracle.config
+    seed: dict[str, Any]
+    generator: dict[str, Any]  # generator.type=fuzz etc
+
+
+class OrchestratorRuleConfig(TypedDict, total=False):
+    """Configuration schema for one orchestrator rule."""
+    id: Required[str]
+    when: dict[str, Any]
+    then: list[dict[str, Any]]
+
+
+class OrchestratorCampaignConfig(TypedDict, total=False):
+    """Configuration schema for orchestrator campaign."""
+    engine: Required[str]  # must be "orchestrator"
+    duration_s: float
+    channels: Required[list[OrchestratorChannelConfig]]
+    rules: list[OrchestratorRuleConfig]
+
+
 # ==================== Schema Registry ====================
 
 ADAPTER_SCHEMAS: dict[str, type[TypedDict]] = {
