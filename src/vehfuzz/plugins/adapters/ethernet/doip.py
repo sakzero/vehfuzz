@@ -96,7 +96,8 @@ class _DoipAdapter(Adapter):
                 return Message(data=uds, meta={"doip": {"src": src, "dst": dst, "payload_type": ptype}})
 
     def _recv_exact(self, n: int) -> bytes:
-        assert self._sock is not None
+        if self._sock is None:
+            raise RuntimeError("doip adapter not open")
         buf = bytearray()
         while len(buf) < n:
             chunk = self._sock.recv(n - len(buf))
@@ -106,7 +107,8 @@ class _DoipAdapter(Adapter):
         return bytes(buf)
 
     def _do_routing_activation(self, *, timeout_s: float) -> None:
-        assert self._sock is not None
+        if self._sock is None:
+            raise RuntimeError("doip adapter not open")
         activation_type = int(self._cfg.get("activation_type", 0x00)) & 0xFF
 
         payload = struct.pack(">HBBI", self._tester_addr, activation_type, 0x00, 0x00000000)

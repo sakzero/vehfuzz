@@ -93,7 +93,6 @@ class _IsoTpSocketCanAdapter(Adapter):
             if time.time() - start > tx_timeout_s:
                 raise TimeoutError("ISO-TP send timeout")
 
-            chunk = payload[offset : offset + 7]
             max_chunk = max(0, frame_len - 1)
             chunk = payload[offset : offset + max_chunk]
             offset += len(chunk)

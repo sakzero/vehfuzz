@@ -35,7 +35,7 @@ class TextSink(OfflineSink):
     def emit(self, msg: Message) -> None:
         try:
             text = msg.data.decode("ascii", errors="replace")
-        except Exception:
+        except (UnicodeDecodeError, AttributeError):
             text = repr(msg.data)
         self._fp.write(text)
         if not text.endswith("\n"):

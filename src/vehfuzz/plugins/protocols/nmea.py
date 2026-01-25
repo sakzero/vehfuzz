@@ -72,10 +72,10 @@ class _NmeaProtocol(Protocol):
                 course_deg = float(scenario.get("course_deg", 0.0))
 
             jitter_deg = float(scenario.get("jitter_deg", 0.0))
-            if jitter_deg > 0 and mutated:
-                j = int.from_bytes(mutated[:2].ljust(2, b"\x00"), "big") - 32768
+            if jitter_deg > 0 and len(mutated) >= 4:
+                j = int.from_bytes(mutated[:2], "big") - 32768
                 lat += j * jitter_deg / 32768.0
-                k = int.from_bytes(mutated[2:4].ljust(2, b"\x00"), "big") - 32768
+                k = int.from_bytes(mutated[2:4], "big") - 32768
                 lon += k * jitter_deg / 32768.0
 
             status = "A"
@@ -89,7 +89,7 @@ class _NmeaProtocol(Protocol):
         else:
             try:
                 s = mutated.decode("ascii", errors="replace")
-            except Exception:
+            except (UnicodeDecodeError, AttributeError):
                 s = repr(mutated)
 
             s = s.strip("\r\n")
@@ -114,7 +114,7 @@ class _NmeaProtocol(Protocol):
     def parse(self, msg: Message) -> ParsedMessage:
         try:
             s = msg.data.decode("ascii", errors="replace").strip("\r\n")
-        except Exception:
+        except (UnicodeDecodeError, AttributeError):
             s = repr(msg.data)
         fields: dict[str, Any] = {"len": len(msg.data)}
         if s.startswith("$"):

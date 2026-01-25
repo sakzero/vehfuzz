@@ -3,53 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from vehfuzz.core.parsed import ByteRange, ParsedMessage
+from vehfuzz.core.parsers.uds_parser import parse_uds_payload
 from vehfuzz.core.plugins import Message, Protocol, register_protocol
 
 
-def _parse_uds(data: bytes) -> dict[str, Any]:
-    if not data:
-        return {"kind": "empty"}
-
-    sid = int(data[0])
-    if sid == 0x7F and len(data) >= 3:
-        req_sid = int(data[1])
-        nrc = int(data[2])
-        return {
-            "kind": "negative_response",
-            "sid": sid,
-            "request_sid": req_sid,
-            "nrc": nrc,
-        }
-
-    # Positive response SID is request SID + 0x40 in many services.
-    is_positive = sid >= 0x40
-    req_sid = (sid - 0x40) & 0xFF if is_positive else sid
-
-    out: dict[str, Any] = {
-        "kind": "positive_response" if is_positive else "request",
-        "sid": sid,
-        "request_sid": req_sid,
-    }
-
-    # Best-effort service-specific parsing for common services.
-    if req_sid == 0x10 and len(data) >= 2:
-        out["session_type"] = int(data[1])
-    elif req_sid == 0x27 and len(data) >= 2:
-        out["security_subfunction"] = int(data[1])
-        out["payload_len"] = max(0, len(data) - 2)
-    elif req_sid == 0x22 and len(data) >= 3:
-        out["did"] = (int(data[1]) << 8) | int(data[2])
-    elif req_sid == 0x2E and len(data) >= 3:
-        out["did"] = (int(data[1]) << 8) | int(data[2])
-        out["payload_len"] = max(0, len(data) - 3)
-    elif req_sid == 0x3E and len(data) >= 2:
-        out["subfunction"] = int(data[1])
-    elif req_sid == 0x19 and len(data) >= 2:
-        out["subfunction"] = int(data[1])
-    else:
-        if len(data) >= 2:
-            out["subfunction"] = int(data[1])
-    return out
+# Re-export for backward compatibility (deprecated, use core.parsers.uds_parser)
+_parse_uds = parse_uds_payload
 
 
 class _UdsProtocol(Protocol):
@@ -69,7 +28,7 @@ class _UdsProtocol(Protocol):
         return Message(data=mutated, meta=meta)
 
     def parse(self, msg: Message) -> ParsedMessage:
-        fields = _parse_uds(bytes(msg.data))
+        fields = parse_uds_payload(bytes(msg.data))
         fields["len"] = len(msg.data)
         flow_key = None
         if isinstance(msg.meta.get("doip"), dict):

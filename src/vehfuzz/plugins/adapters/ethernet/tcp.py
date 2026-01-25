@@ -43,7 +43,10 @@ class _TcpAdapter(Adapter):
             raise RuntimeError("tcp adapter not open")
         self._sock.settimeout(timeout_s)
         try:
-            data = self._sock.recv(int(self._cfg.get("recv_buf", 65535)))
+            recv_buf = int(self._cfg.get("recv_buf", 65535))
+            # Validate buffer size: 1 byte to 1 MB
+            recv_buf = max(1, min(recv_buf, 1048576))
+            data = self._sock.recv(recv_buf)
         except TimeoutError:
             return None
         except socket.timeout:

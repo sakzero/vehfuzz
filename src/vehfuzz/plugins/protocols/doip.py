@@ -4,84 +4,25 @@ import struct
 from typing import Any
 
 from vehfuzz.core.parsed import ByteRange, ParsedMessage
+from vehfuzz.core.parsers.doip_parser import DOIP_PAYLOAD_TYPE_NAMES, parse_doip_header
+from vehfuzz.core.parsers.uds_parser import parse_uds_payload
 from vehfuzz.core.plugins import Message, Protocol, register_protocol
 
 
-_DOIP_PAYLOAD_TYPE_NAMES: dict[int, str] = {
-    0x0001: "vehicle_identification_request",
-    0x0002: "vehicle_identification_response",
-    0x0003: "vehicle_identification_request_eid",
-    0x0004: "vehicle_identification_request_vin",
-    0x0005: "routing_activation_request",
-    0x0006: "routing_activation_response",
-    0x0007: "alive_check_request",
-    0x0008: "alive_check_response",
-    0x4001: "entity_status_request",
-    0x4002: "entity_status_response",
-    0x8001: "diagnostic_message",
-    0x8002: "diagnostic_message_positive_ack",
-    0x8003: "diagnostic_message_negative_ack",
-}
+# Keep local reference for backward compatibility
+_DOIP_PAYLOAD_TYPE_NAMES = DOIP_PAYLOAD_TYPE_NAMES
 
 
 def _parse_doip(data: bytes) -> tuple[dict[str, Any], int | None]:
-    if len(data) < 8:
-        return {"ok": False, "reason": "too_short", "len": len(data)}, None
-    version, inv, payload_type, payload_len = struct.unpack(">BBHI", data[:8])
-    payload_len_i = int(payload_len)
-    available = max(0, len(data) - 8)
-    fields: dict[str, Any] = {
-        "version": int(version),
-        "inverse_version": int(inv),
-        "payload_type": int(payload_type),
-        "payload_type_name": _DOIP_PAYLOAD_TYPE_NAMES.get(int(payload_type), "unknown"),
-        "payload_len": payload_len_i,
-        "inverse_ok": ((version ^ inv) & 0xFF) == 0xFF,
-        "payload_len_available": available,
-        "payload_len_matches": payload_len_i <= available,
-    }
+    """Parse DoIP header and nested UDS payload."""
+    fields, payload_off = parse_doip_header(data)
 
-    payload = data[8 : 8 + min(payload_len_i, available)]
+    # Parse nested UDS if present
+    uds_payload = fields.pop("uds_payload", None)
+    if uds_payload is not None:
+        fields["inner_uds"] = parse_uds_payload(uds_payload)
 
-    # Routing Activation Request (0x0005): tester addr + activation_type + reserved + oem.
-    if int(payload_type) == 0x0005 and len(payload) >= 8:
-        tester_addr = int.from_bytes(payload[0:2], "big")
-        activation_type = int(payload[2])
-        fields.update({"tester_addr": tester_addr, "activation_type": activation_type, "oem_len": max(0, len(payload) - 8)})
-
-    # Routing Activation Response (0x0006): best-effort parse.
-    if int(payload_type) == 0x0006 and len(payload) >= 5:
-        tester_addr = int.from_bytes(payload[0:2], "big")
-        # Many stacks put response_code at byte 4; keep best-effort.
-        response_code = int(payload[4])
-        fields.update({"tester_addr": tester_addr, "activation_response_code": response_code})
-
-    # Alive Check Response (0x0008): logical address.
-    if int(payload_type) == 0x0008 and len(payload) >= 2:
-        logical_addr = int.from_bytes(payload[0:2], "big")
-        fields.update({"logical_addr": logical_addr})
-
-    # Diagnostic Message (0x8001): src/dst + UDS payload.
-    if int(payload_type) == 0x8001 and len(payload) >= 4:
-        src = int.from_bytes(payload[0:2], "big")
-        dst = int.from_bytes(payload[2:4], "big")
-        uds = payload[4:]
-        fields.update({"diag_src": src, "diag_dst": dst, "uds_len": len(uds)})
-        try:
-            from vehfuzz.plugins.protocols.uds import _parse_uds  # type: ignore
-
-            fields["inner_uds"] = _parse_uds(uds)
-        except Exception:
-            pass
-
-    # Diagnostic Ack (0x8002/0x8003): src/dst + ack code.
-    if int(payload_type) in (0x8002, 0x8003) and len(payload) >= 5:
-        src = int.from_bytes(payload[0:2], "big")
-        dst = int.from_bytes(payload[2:4], "big")
-        ack = int(payload[4])
-        fields.update({"diag_src": src, "diag_dst": dst, "ack_code": ack})
-
-    return fields, 8
+    return fields, payload_off
 
 
 class _DoipProtocol(Protocol):

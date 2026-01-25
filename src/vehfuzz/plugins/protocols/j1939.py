@@ -1,10 +1,33 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from vehfuzz.core.parsed import ByteRange, ParsedMessage
 from vehfuzz.core.plugins import Message, Protocol, register_protocol
+
+
+# Safety limits for TP state management
+MAX_TP_STATES = 256
+DEFAULT_TP_TIMEOUT_S = 5.0
+MAX_TP_MESSAGE_LEN = 1785  # J1939 max: 255 packets * 7 bytes
+
+
+# TP.CM Control byte values
+TP_CM_RTS = 0x10  # Request To Send
+TP_CM_CTS = 0x11  # Clear To Send
+TP_CM_EOM_ACK = 0x13  # End of Message Acknowledgment
+TP_CM_BAM = 0x20  # Broadcast Announce Message
+TP_CM_ABORT = 0xFF  # Connection Abort
+
+TP_CM_CONTROL_NAMES: dict[int, str] = {
+    TP_CM_RTS: "RTS",
+    TP_CM_CTS: "CTS",
+    TP_CM_EOM_ACK: "EOM_ACK",
+    TP_CM_BAM: "BAM",
+    TP_CM_ABORT: "ABORT",
+}
 
 
 @dataclass(frozen=True)
@@ -59,6 +82,11 @@ class _TpReassembly:
     destination_address: int | None
     next_seq: int = 1
     buf: bytearray = field(default_factory=bytearray)
+    last_activity: float = 0.0
+
+    def is_expired(self, now: float, timeout_s: float) -> bool:
+        """Check if reassembly has timed out."""
+        return (now - self.last_activity) > timeout_s
 
 
 class _J1939Protocol(Protocol):
@@ -66,6 +94,32 @@ class _J1939Protocol(Protocol):
         self._cfg = config
         # Keyed by (source_address, destination_address, target_pgn)
         self._tp_states: dict[tuple[int, int | None, int], _TpReassembly] = {}
+        self._last_cleanup: float = 0.0
+        self._cleanup_interval: float = float(config.get("cleanup_interval_s", 10.0))
+        self._tp_timeout: float = float(config.get("tp_timeout_s", DEFAULT_TP_TIMEOUT_S))
+        self._max_tp_len: int = int(config.get("max_tp_len", MAX_TP_MESSAGE_LEN))
+
+    def _cleanup_expired_states(self, now: float) -> None:
+        """Remove expired TP reassembly states."""
+        if now - self._last_cleanup < self._cleanup_interval:
+            return
+        self._last_cleanup = now
+
+        expired_keys = [
+            k for k, v in self._tp_states.items()
+            if v.is_expired(now, self._tp_timeout)
+        ]
+        for k in expired_keys:
+            del self._tp_states[k]
+
+        # Also limit total number of states (LRU-like: remove oldest)
+        if len(self._tp_states) > MAX_TP_STATES:
+            sorted_keys = sorted(
+                self._tp_states.keys(),
+                key=lambda k: self._tp_states[k].last_activity,
+            )
+            for k in sorted_keys[: len(self._tp_states) - MAX_TP_STATES]:
+                del self._tp_states[k]
 
     def build_tx(self, seed: Message, mutated: bytes) -> Message:
         cfg = self._cfg
@@ -135,16 +189,21 @@ class _J1939Protocol(Protocol):
         return Message(data=data, meta=out_meta)
 
     def parse(self, msg: Message) -> ParsedMessage:
+        now = time.time()
+        self._cleanup_expired_states(now)
+
         can_id = msg.meta.get("can_id")
         try:
             can_id_i = int(can_id) if can_id is not None else None
-        except Exception:
+        except (TypeError, ValueError):
             can_id_i = None
         if can_id_i is None:
             return ParsedMessage(protocol="j1939", level="raw", ok=False, reason="missing_can_id", fields={"len": len(msg.data)})
         j = parse_j1939_id(can_id_i)
 
         data = bytes(msg.data)
+        tp_error: str | None = None
+
         # J1939 Transport Protocol (TP):
         # - TP.CM: PGN 0x00EC00
         # - TP.DT: PGN 0x00EB00
@@ -156,15 +215,37 @@ class _J1939Protocol(Protocol):
             target_pgn = int.from_bytes(data[5:8], "little") & 0x3FFFF
             da = j.destination_address
 
+            control_name = TP_CM_CONTROL_NAMES.get(control, f"unknown_0x{control:02X}")
+
             # BAM(0x20) and RTS(0x10) initiate transfer.
-            if control in (0x20, 0x10) and total_len > 0 and total_packets > 0:
+            if control in (TP_CM_BAM, TP_CM_RTS):
+                if total_len > 0 and total_packets > 0:
+                    # Validate total_len
+                    if total_len > self._max_tp_len:
+                        tp_error = f"TP total_len {total_len} exceeds max {self._max_tp_len}"
+                    else:
+                        key = (j.source_address, da, target_pgn)
+                        self._tp_states[key] = _TpReassembly(
+                            pgn=target_pgn,
+                            total_len=total_len,
+                            total_packets=total_packets,
+                            destination_address=da,
+                            last_activity=now,
+                        )
+                else:
+                    tp_error = f"TP invalid: total_len={total_len}, total_packets={total_packets}"
+
+            # CTS(0x11) - Clear To Send response
+            elif control == TP_CM_CTS:
+                # CTS contains: num_packets_to_send, next_packet_number, reserved, target_pgn
+                pass  # State machine would handle this
+
+            # Abort(0xFF) - Connection abort
+            elif control == TP_CM_ABORT:
                 key = (j.source_address, da, target_pgn)
-                self._tp_states[key] = _TpReassembly(
-                    pgn=target_pgn,
-                    total_len=total_len,
-                    total_packets=total_packets,
-                    destination_address=da,
-                )
+                if key in self._tp_states:
+                    del self._tp_states[key]
+                    tp_error = "TP connection aborted"
 
             return ParsedMessage(
                 protocol="j1939",
@@ -180,11 +261,13 @@ class _J1939Protocol(Protocol):
                     "tp": {
                         "type": "cm",
                         "control": control,
+                        "control_name": control_name,
                         "total_len": total_len,
                         "total_packets": total_packets,
                         "max_packets": max_packets,
                         "target_pgn": target_pgn,
                     },
+                    "tp_error": tp_error,
                     "len": len(data),
                 },
                 payload=ByteRange(0, len(data)),
@@ -200,7 +283,10 @@ class _J1939Protocol(Protocol):
             if candidates:
                 key = candidates[0]
                 st = self._tp_states[key]
+                st.last_activity = now
+
                 if seq != st.next_seq:
+                    tp_error = f"TP sequence error: expected {st.next_seq}, got {seq}"
                     del self._tp_states[key]
                 else:
                     st.next_seq += 1
@@ -228,10 +314,13 @@ class _J1939Protocol(Protocol):
                                     "total_packets": st.total_packets,
                                 },
                                 "tp_payload_hex": payload.hex(),
+                                "tp_error": tp_error,
                                 "len": len(data),
                             },
                             payload=ByteRange(0, len(data)),
                         )
+            else:
+                tp_error = "TP.DT received without prior TP.CM"
 
             return ParsedMessage(
                 protocol="j1939",
@@ -245,6 +334,7 @@ class _J1939Protocol(Protocol):
                     "source_address": j.source_address,
                     "destination_address": da,
                     "tp": {"type": "dt", "seq": seq},
+                    "tp_error": tp_error,
                     "len": len(data),
                 },
                 payload=ByteRange(0, len(data)),

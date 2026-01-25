@@ -178,7 +178,7 @@ class _CanDbcProtocol(Protocol):
         frame_id = msg.meta.get("can_id")
         try:
             frame_id_i = int(frame_id) if frame_id is not None else None
-        except Exception:
+        except (TypeError, ValueError):
             frame_id_i = None
 
         decoded: dict[str, Any] | None = None

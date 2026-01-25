@@ -54,12 +54,13 @@ def _payload_hex(msg: Message, parsed: dict[str, Any] | None) -> str | None:
     try:
         off = int(payload.get("offset", 0))
         ln = int(payload.get("length", 0))
-    except Exception:
+    except (TypeError, ValueError):
         return None
     if off < 0 or ln <= 0:
         return None
     data = bytes(msg.data)
-    if off >= len(data):
+    # Bounds check: ensure offset and length are within data
+    if off >= len(data) or off + ln > len(data):
         return None
     return data[off : off + ln].hex()
 
@@ -151,6 +152,8 @@ def run_campaign(
     rng = random.Random(int(rng_seed))
 
     seeds = load_seed_messages(config_dir, seed_cfg)
+    if not seeds:
+        raise ValueError("No seed messages loaded; check campaign.seed configuration")
     protocol_cfg = campaign_cfg.get("protocol_config", {}) or {}
     if not isinstance(protocol_cfg, dict):
         raise ValueError("campaign.protocol_config must be a mapping")

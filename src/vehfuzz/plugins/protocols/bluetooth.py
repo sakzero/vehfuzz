@@ -9,6 +9,10 @@ from vehfuzz.plugins.protocols.raw import _RawProtocol
 
 _SDP_PDU_IDS = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07}
 
+# Safety limits
+MAX_RFCOMM_INFO_LEN = 32767  # RFCOMM max info length (15-bit)
+MAX_SDP_PARAM_LEN = 65535  # SDP max parameter length (16-bit)
+
 
 def _crc8_msb(data: bytes, *, poly: int = 0x07, init: int = 0xFF) -> int:
     crc = init & 0xFF
@@ -27,19 +31,42 @@ def _rfcomm_fcs(data: bytes) -> int:
     return _crc8_msb(data) ^ 0xFF
 
 
-def _decode_rfcomm_len(buf: bytes, off: int) -> tuple[int, int] | None:
+def _decode_rfcomm_len(buf: bytes, off: int, *, remaining: int | None = None) -> tuple[int, int] | None:
+    """Decode RFCOMM length field with boundary validation.
+
+    Args:
+        buf: Buffer containing the length field
+        off: Offset to start decoding
+        remaining: Optional remaining bytes after header (for validation)
+
+    Returns:
+        Tuple of (length, bytes_consumed) or None if invalid
+    """
     if off >= len(buf):
         return None
     b0 = buf[off]
     if b0 & 0x01:
-        return (b0 >> 1) & 0x7F, 1
-    if off + 1 >= len(buf):
+        length = (b0 >> 1) & 0x7F
+        len_bytes = 1
+    else:
+        if off + 1 >= len(buf):
+            return None
+        b1 = buf[off + 1]
+        if (b1 & 0x01) != 0x01:
+            return None
+        length = ((b0 >> 1) & 0x7F) | (((b1 >> 1) & 0x7F) << 7)
+        len_bytes = 2
+
+    # Validate decoded length against remaining buffer if provided
+    if remaining is not None and length > remaining:
+        # Length exceeds available data - still return but caller should handle
+        pass
+
+    # Sanity check: RFCOMM max info length is 15-bit
+    if length > MAX_RFCOMM_INFO_LEN:
         return None
-    b1 = buf[off + 1]
-    if (b1 & 0x01) != 0x01:
-        return None
-    length = ((b0 >> 1) & 0x7F) | (((b1 >> 1) & 0x7F) << 7)
-    return int(length), 2
+
+    return int(length), len_bytes
 
 
 def _encode_rfcomm_len(length: int, *, prefer_two_bytes: bool) -> bytes:
@@ -138,8 +165,18 @@ class _BluetoothHciProtocol(_RawProtocol):
         if l2_len >= 5 and int(l2_payload[0]) in _SDP_PDU_IDS:
             pdu_id = int(l2_payload[0])
             txn = int.from_bytes(l2_payload[1:3], "big")
-            param_len = int.from_bytes(l2_payload[3:5], "big")
-            fields.update({"layer": "sdp", "sdp_pdu_id": pdu_id, "sdp_txn": txn, "sdp_param_len": param_len})
+            param_len_declared = int.from_bytes(l2_payload[3:5], "big")
+            param_available = max(0, len(l2_payload) - 5)
+            param_len = min(param_len_declared, param_available)
+            param_len_mismatch = param_len_declared != param_available
+            fields.update({
+                "layer": "sdp",
+                "sdp_pdu_id": pdu_id,
+                "sdp_txn": txn,
+                "sdp_param_len": param_len,
+                "sdp_param_len_declared": param_len_declared,
+                "sdp_param_len_mismatch": param_len_mismatch,
+            })
             return ParsedMessage(protocol="bluetooth", level="app", ok=True, flow_key=flow_key, fields=fields, payload=payload_br)
 
         # RFCOMM UIH detection (best-effort)
@@ -148,12 +185,18 @@ class _BluetoothHciProtocol(_RawProtocol):
             ctrl = int(l2_payload[1])
             base_ctrl = ctrl & 0xEF
             if (addr & 0x01) == 0x01 and base_ctrl == 0xEF:
-                dec = _decode_rfcomm_len(l2_payload, 2)
+                # Calculate remaining bytes for validation
+                remaining_after_len = max(0, len(l2_payload) - 2)
+                dec = _decode_rfcomm_len(l2_payload, 2, remaining=remaining_after_len)
                 rf_len = None
                 rf_hdr_len = None
+                rf_len_mismatch = False
                 if dec is not None:
                     rf_len, len_len = dec
                     rf_hdr_len = 2 + len_len
+                    # Check if declared length matches available data (minus FCS byte)
+                    available_info = max(0, len(l2_payload) - rf_hdr_len - 1)
+                    rf_len_mismatch = rf_len != available_info
                 dlci = (addr >> 2) & 0x3F
                 fields.update(
                     {
@@ -163,6 +206,7 @@ class _BluetoothHciProtocol(_RawProtocol):
                         "rfcomm_dlci": dlci,
                         "rfcomm_len": rf_len,
                         "rfcomm_hdr_len": rf_hdr_len,
+                        "rfcomm_len_mismatch": rf_len_mismatch,
                     }
                 )
                 return ParsedMessage(protocol="bluetooth", level="app", ok=True, flow_key=flow_key, fields=fields, payload=payload_br)
@@ -270,10 +314,10 @@ class _BluetoothHciProtocol(_RawProtocol):
             return None
 
         transaction_id = int.from_bytes(l2_payload[1:3], "big")
-        param_len = int.from_bytes(l2_payload[3:5], "big")
+        param_len_declared = int.from_bytes(l2_payload[3:5], "big")
         params = l2_payload[5:]
-        if param_len > len(params):
-            param_len = len(params)
+        # Validate and clamp param_len
+        param_len = min(param_len_declared, len(params), MAX_SDP_PARAM_LEN)
         params = params[:param_len]
 
         preserve_len = bool(self._cfg.get("preserve_sdp_param_len", True))
@@ -304,17 +348,27 @@ class _BluetoothHciProtocol(_RawProtocol):
             return None
         _orig_len, len_len = dec
         hdr_len = 2 + len_len
-        if len(l2_payload) < hdr_len + 1:
+
+        # Boundary check: need at least header + 1 byte for FCS
+        if hdr_len + 1 > len(l2_payload):
             return None
 
-        orig_info = l2_payload[hdr_len:-1]
-        orig_fcs = int(l2_payload[-1])
+        # Safe extraction of info field (between header and FCS)
+        # Handle edge case where hdr_len == len(l2_payload) - 1 (empty info)
+        if hdr_len >= len(l2_payload):
+            orig_info = b""
+            orig_fcs = 0
+        else:
+            orig_info = l2_payload[hdr_len:-1] if hdr_len < len(l2_payload) - 1 else b""
+            orig_fcs = int(l2_payload[-1])
 
         preserve_len = bool(self._cfg.get("preserve_rfcomm_info_len", True))
         if preserve_len:
             new_info = mutated[: len(orig_info)].ljust(len(orig_info), b"\x00")
         else:
             max_len = int(self._cfg.get("rfcomm_info_max_len", 512))
+            # Clamp to RFCOMM max
+            max_len = min(max_len, MAX_RFCOMM_INFO_LEN)
             new_info = mutated[:max_len]
 
         prefer_two = len_len == 2

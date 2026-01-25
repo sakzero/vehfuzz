@@ -197,7 +197,11 @@ class _WifiTcpIpProtocol(_RawProtocol):
         ip_total_len = struct.unpack(">H", bytes(ip[2:4]))[0]
         if ip_total_len < ip_hlen:
             return None
+
+        # Track length mismatch for diagnostics
+        length_mismatch = False
         if ip_total_len > len(ip):
+            length_mismatch = True
             ip_total_len = len(ip)
 
         proto = int(ip[9])
@@ -219,19 +223,25 @@ class _WifiTcpIpProtocol(_RawProtocol):
                 new_payload = mutated[:max_len]
 
             udp_len = 8 + len(new_payload)
-            udp_hdr[4:6] = struct.pack(">H", udp_len & 0xFFFF)
+            # Check for length overflow
+            if udp_len > 0xFFFF:
+                return None
+            udp_hdr[4:6] = struct.pack(">H", udp_len)
             udp_hdr[6:8] = b"\x00\x00"
             udp_chk = _udp_checksum(src_ip, dst_ip, bytes(udp_hdr), new_payload)
             udp_hdr[6:8] = struct.pack(">H", udp_chk)
 
             total_len = ip_hlen + udp_len
-            ip[2:4] = struct.pack(">H", total_len & 0xFFFF)
+            # Check for IP total length overflow
+            if total_len > 0xFFFF:
+                return None
+            ip[2:4] = struct.pack(">H", total_len)
             ip[10:12] = b"\x00\x00"
             ip_chk = _ipv4_header_checksum(bytes(ip[:ip_hlen]))
             ip[10:12] = struct.pack(">H", ip_chk)
 
             out = bytes(ip[:ip_hlen]) + bytes(udp_hdr) + new_payload
-            return out, {"l4": "udp", "payload_len": len(new_payload)}
+            return out, {"l4": "udp", "payload_len": len(new_payload), "length_mismatch": length_mismatch}
 
         if proto == 6:
             if len(l4) < 20:
@@ -256,13 +266,16 @@ class _WifiTcpIpProtocol(_RawProtocol):
             tcp_hdr[16:18] = struct.pack(">H", tcp_chk)
 
             total_len = ip_hlen + tcp_hlen + len(new_payload)
-            ip[2:4] = struct.pack(">H", total_len & 0xFFFF)
+            # Check for IP total length overflow
+            if total_len > 0xFFFF:
+                return None
+            ip[2:4] = struct.pack(">H", total_len)
             ip[10:12] = b"\x00\x00"
             ip_chk = _ipv4_header_checksum(bytes(ip[:ip_hlen]))
             ip[10:12] = struct.pack(">H", ip_chk)
 
             out = bytes(ip[:ip_hlen]) + bytes(tcp_hdr) + new_payload
-            return out, {"l4": "tcp", "payload_len": len(new_payload)}
+            return out, {"l4": "tcp", "payload_len": len(new_payload), "length_mismatch": length_mismatch}
 
         return None
 
@@ -384,24 +397,40 @@ def _decrypt_capability(cfg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _try_ccmp_decrypt(frame: bytes, *, hdr_len: int, hdr: dict[str, Any], cfg: dict[str, Any]) -> bytes | None:
+def _try_ccmp_decrypt(frame: bytes, *, hdr_len: int, hdr: dict[str, Any], cfg: dict[str, Any]) -> tuple[bytes | None, str | None]:
+    """
+    Attempt CCMP decryption.
+
+    Returns:
+        Tuple of (decrypted_payload_or_none, error_reason_or_none)
+    """
     d = cfg.get("decrypt") if isinstance(cfg.get("decrypt"), dict) else None
     if not d:
-        return None
+        return None, "no_decrypt_config"
     tk_hex = d.get("ccmp_tk_hex")
     if not isinstance(tk_hex, str) or not tk_hex:
-        return None
-    # Config is validated in wifi_protocol(); keep this as a guard for direct calls.
-    tk = bytes.fromhex(tk_hex)
-    from Cryptodome.Cipher import AES  # type: ignore
+        return None, "no_ccmp_tk"
+
+    try:
+        tk = bytes.fromhex(tk_hex)
+    except ValueError as e:
+        return None, f"invalid_tk_hex: {e}"
+
+    if len(tk) != 16:
+        return None, f"tk_wrong_length: {len(tk)}"
+
+    try:
+        from Cryptodome.Cipher import AES  # type: ignore
+    except ImportError:
+        return None, "pycryptodomex_not_installed"
 
     # CCMP header is 8 bytes immediately after 802.11 header; MIC is last 8 bytes.
     if len(frame) < hdr_len + 8 + 8:
-        return None
+        return None, "frame_too_short_for_ccmp"
     ccmp_hdr = frame[hdr_len : hdr_len + 8]
     enc = frame[hdr_len + 8 :]
     if len(enc) < 8:
-        return None
+        return None, "encrypted_payload_too_short"
     ciphertext, mic = enc[:-8], enc[-8:]
 
     pn0, pn1 = ccmp_hdr[0], ccmp_hdr[1]
@@ -411,7 +440,7 @@ def _try_ccmp_decrypt(frame: bytes, *, hdr_len: int, hdr: dict[str, Any], cfg: d
     prio = int(hdr.get("qos_tid") or 0) & 0xFF
     try:
         addr2 = bytes.fromhex(str(hdr.get("addr2", "")).replace(":", ""))
-    except Exception:
+    except (ValueError, AttributeError):
         addr2 = b""
     if len(addr2) != 6:
         addr2 = b"\x00" * 6
@@ -421,9 +450,12 @@ def _try_ccmp_decrypt(frame: bytes, *, hdr_len: int, hdr: dict[str, Any], cfg: d
     try:
         cipher = AES.new(tk, AES.MODE_CCM, nonce=nonce, mac_len=8)
         cipher.update(aad)
-        return cipher.decrypt_and_verify(ciphertext, mic)
-    except Exception:
-        return None
+        return cipher.decrypt_and_verify(ciphertext, mic), None
+    except ValueError as e:
+        # MIC verification failed or other CCM error
+        return None, f"ccm_decrypt_failed: {e}"
+    except Exception as e:
+        return None, f"decrypt_error: {type(e).__name__}: {e}"
 
 
 def _ccmp_build_aad(hdr: bytes) -> bytes:
@@ -492,7 +524,7 @@ def _parse_80211_ipv4(pkt: bytes, *, has_radiotap: bool, cfg: dict[str, Any]) ->
     protected = bool(fc & 0x4000)
     hdr = _parse_80211_data_header(frame, hdr_len)
     if protected:
-        pt = _try_ccmp_decrypt(frame, hdr_len=hdr_len, hdr=hdr, cfg=cfg)
+        pt, decrypt_error = _try_ccmp_decrypt(frame, hdr_len=hdr_len, hdr=hdr, cfg=cfg)
         if pt is None:
             return ParsedMessage(
                 protocol="wifi",
@@ -500,7 +532,14 @@ def _parse_80211_ipv4(pkt: bytes, *, has_radiotap: bool, cfg: dict[str, Any]) ->
                 ok=True,
                 encrypted=True,
                 reason="protected_data_frame",
-                fields={"radiotap": has_radiotap, "hdr_len": hdr_len, "len": len(pkt), **hdr, "decrypt": _decrypt_capability(cfg)},
+                fields={
+                    "radiotap": has_radiotap,
+                    "hdr_len": hdr_len,
+                    "len": len(pkt),
+                    **hdr,
+                    "decrypt": _decrypt_capability(cfg),
+                    "decrypt_error": decrypt_error,
+                },
             )
         # Decrypted payload includes LLC+payload.
         if len(pt) < 8:

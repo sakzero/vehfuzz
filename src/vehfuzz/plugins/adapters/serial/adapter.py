@@ -31,14 +31,22 @@ class _SerialAdapter(Adapter):
     def send(self, msg: Message) -> None:
         if self._ser is None:
             raise RuntimeError("serial adapter not open")
-        self._ser.write(msg.data)
+        try:
+            self._ser.write(msg.data)
+        except OSError as e:
+            raise RuntimeError(f"serial write failed: {e}") from e
 
     def recv(self, timeout_s: float) -> Message | None:
         if self._ser is None:
             raise RuntimeError("serial adapter not open")
         # pyserial timeout is set on the Serial object; do a non-blocking-ish read.
         max_bytes = int(self._cfg.get("recv_buf", 4096))
-        data = self._ser.read(max_bytes)
+        # Validate buffer size
+        max_bytes = max(1, min(max_bytes, 1048576))  # 1 byte to 1 MB
+        try:
+            data = self._ser.read(max_bytes)
+        except OSError as e:
+            raise RuntimeError(f"serial read failed: {e}") from e
         if not data:
             return None
         return Message(data=bytes(data), meta={})

@@ -7,6 +7,12 @@ from typing import Any, Callable, TypeVar
 from vehfuzz.core.parsed import ParsedMessage
 
 
+# Interface versions - increment when making breaking changes
+ADAPTER_INTERFACE_VERSION = "1.0"
+PROTOCOL_INTERFACE_VERSION = "1.0"
+ORACLE_INTERFACE_VERSION = "1.0"
+
+
 T = TypeVar("T")
 
 
@@ -17,6 +23,19 @@ class Message:
 
 
 class Adapter(ABC):
+    """
+    Abstract base class for hardware/network adapters.
+
+    Interface Version: 1.0
+
+    Implementations must:
+    - Raise RuntimeError from send()/recv() if not open
+    - Make close() idempotent (safe to call multiple times)
+    - Return None from recv() on timeout (not raise)
+    """
+
+    INTERFACE_VERSION = ADAPTER_INTERFACE_VERSION
+
     @abstractmethod
     def open(self) -> None: ...
 
@@ -31,6 +50,19 @@ class Adapter(ABC):
 
 
 class Protocol(ABC):
+    """
+    Abstract base class for protocol handlers.
+
+    Interface Version: 1.0
+
+    Implementations must:
+    - Return a valid Message from build_tx()
+    - Not modify the seed message in build_tx()
+    - Return ParsedMessage or None from parse()
+    """
+
+    INTERFACE_VERSION = PROTOCOL_INTERFACE_VERSION
+
     @abstractmethod
     def build_tx(self, seed: Message, mutated: bytes) -> Message: ...
 
@@ -39,6 +71,18 @@ class Protocol(ABC):
 
 
 class Oracle(ABC):
+    """
+    Abstract base class for anomaly detection oracles.
+
+    Interface Version: 1.0
+
+    Implementations must:
+    - Accept keyword arguments in on_tx/on_rx/on_error
+    - Return a dict from finalize()
+    """
+
+    INTERFACE_VERSION = ORACLE_INTERFACE_VERSION
+
     @abstractmethod
     def on_tx(self, *, case_id: int, msg: Message) -> None: ...
 

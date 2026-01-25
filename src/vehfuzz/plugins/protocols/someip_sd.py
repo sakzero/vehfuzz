@@ -7,6 +7,11 @@ from vehfuzz.core.parsed import ByteRange, ParsedMessage
 from vehfuzz.core.plugins import Message, Protocol, register_protocol
 
 
+# Configurable limits for parsing
+DEFAULT_MAX_ENTRIES = 100
+DEFAULT_MAX_OPTIONS = 100
+
+
 def _sd_flags(*, reboot: bool, unicast: bool, raw_flags: int | None = None) -> int:
     if raw_flags is not None:
         return int(raw_flags) & 0xFF
@@ -77,6 +82,8 @@ def _fill_sd_option_fields(out: dict[str, Any], opt_type: int, data: bytes) -> N
 class _SomeIpSdProtocol(Protocol):
     def __init__(self, config: dict[str, Any]) -> None:
         self._cfg = config
+        self._max_entries = int(config.get("max_entries", DEFAULT_MAX_ENTRIES))
+        self._max_options = int(config.get("max_options", DEFAULT_MAX_OPTIONS))
 
     def build_tx(self, seed: Message, mutated: bytes) -> Message:
         cfg = self._cfg
@@ -189,6 +196,8 @@ class _SomeIpSdProtocol(Protocol):
         parsed_entries: list[dict[str, Any]] = []
         entry_size = 16
         for i in range(0, len(entries_bytes), entry_size):
+            if len(parsed_entries) >= self._max_entries:
+                break
             chunk = entries_bytes[i : i + entry_size]
             if len(chunk) < entry_size:
                 break
@@ -228,7 +237,7 @@ class _SomeIpSdProtocol(Protocol):
         parsed_options: list[dict[str, Any]] = []
         # Best-effort SOME/IP-SD option parsing: total length = 2 + opt_len.
         o = 0
-        while o + 4 <= len(options_bytes) and len(parsed_options) < 50:
+        while o + 4 <= len(options_bytes) and len(parsed_options) < self._max_options:
             opt_len = int.from_bytes(options_bytes[o : o + 2], "big")
             total = 2 + opt_len
             if total < 4 or o + total > len(options_bytes):
@@ -241,23 +250,36 @@ class _SomeIpSdProtocol(Protocol):
             parsed_options.append(opt)
             o += total
 
-        # Resolve entry -> options (best-effort, bounded).
+        # Resolve entry -> options with bounds checking
         resolved_entries: list[dict[str, Any]] = []
-        for e in parsed_entries[:10]:
+        for e in parsed_entries:
             idx1 = int(e.get("index_1st_options", 0))
             idx2 = int(e.get("index_2nd_options", 0))
             n1 = int(e.get("num_1st_options", 0))
             n2 = int(e.get("num_2nd_options", 0))
+
+            # Safe bounds checking for option indices
+            opts1 = []
+            if 0 <= idx1 < len(parsed_options) and idx1 + n1 <= len(parsed_options):
+                opts1 = parsed_options[idx1 : idx1 + n1]
+            opts2 = []
+            if 0 <= idx2 < len(parsed_options) and idx2 + n2 <= len(parsed_options):
+                opts2 = parsed_options[idx2 : idx2 + n2]
+
             resolved_entries.append(
                 {
                     "service_id": e.get("service_id"),
                     "instance_id": e.get("instance_id"),
                     "type": e.get("type"),
                     "type_name": e.get("type_name"),
-                    "options_1": parsed_options[idx1 : idx1 + n1] if 0 <= idx1 < len(parsed_options) else [],
-                    "options_2": parsed_options[idx2 : idx2 + n2] if 0 <= idx2 < len(parsed_options) else [],
+                    "options_1": opts1,
+                    "options_2": opts2,
                 }
             )
+
+        # Calculate how many entries/options were truncated
+        total_entries_possible = len(entries_bytes) // entry_size
+        entries_truncated = max(0, total_entries_possible - len(parsed_entries))
 
         fields = {
             **someip,
@@ -265,11 +287,12 @@ class _SomeIpSdProtocol(Protocol):
             "sd_entries_len": entries_len,
             "sd_entries_len_declared": entries_len_decl,
             "sd_entries_count": len(parsed_entries),
+            "sd_entries_truncated": entries_truncated,
             "sd_options_len": options_len,
             "sd_options_len_declared": options_len_decl,
             "sd_options_count": len(parsed_options),
-            "sd_entries": parsed_entries[:10],
-            "sd_options": parsed_options[:10],
+            "sd_entries": parsed_entries,
+            "sd_options": parsed_options,
             "sd_entries_resolved": resolved_entries,
             "payload_len": len(payload),
         }
