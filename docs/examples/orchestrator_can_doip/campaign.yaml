@@ -11,6 +11,7 @@ campaign:
       protocol_config:
         can_id: 2015   # 0x7DF
         parse_isotp: true
+      queue_maxsize: 200
       target:
         adapter:
           type: socketcan
@@ -23,14 +24,16 @@ campaign:
         rx_timeout_s: 0.05
 
     - id: doip
-      protocol: doip
-      protocol_config:
-        payload_type: 32769   # 0x8001
+      # Use DoIP adapter + UDS protocol: adapter handles routing activation and wraps UDS into DoIP frames.
+      protocol: uds
       target:
         adapter:
-          type: tcp
+          type: doip
           host: 127.0.0.1
           port: 13400
+          tester_addr: 3584     # 0x0E00
+          ecu_addr: 3585        # 0x0E01
+          routing_activation: true
       seed:
         type: inline_hex
         values: [""]   # DoIP build_tx will wrap payload; empty payload ok for demo
@@ -42,6 +45,7 @@ campaign:
   # trigger a DoIP send with a fixed payload.
   rules:
     - id: can_nrc_triggers_doip
+      cooldown_s: 0.2
       when:
         channel_id: can
         event: rx

@@ -1,0 +1,61 @@
+campaign:
+  name: orchestrator_someip_sd_someip
+  engine: orchestrator
+  duration_s: 10
+
+  # Two-channel example (SOME/IP-SD observed -> trigger SOME/IP request).
+  # Run local demo targets first (see docs/linux_sim.md):
+  # - someip_sd_server.py
+  # - someip_server.py
+  channels:
+    - id: sd
+      protocol: someip_sd
+      target:
+        adapter:
+          type: udp
+          host: 127.0.0.1
+          port: 30490
+          bind_port: 30490
+      seed:
+        type: inline_hex
+        values: [""]   # payload comes from rx; we keep seed minimal
+      generator:
+        type: none
+        rx_timeout_s: 0.05
+
+    - id: someip
+      protocol: someip
+      protocol_config:
+        service_id: 4660   # 0x1234
+        method_id: 1
+        client_id: 1
+        session_id: 1
+        message_type: 0    # request
+      target:
+        adapter:
+          type: udp
+          host: 127.0.0.1
+          port: 30509
+          bind_port: 30509
+      seed:
+        type: inline_hex
+        values: [""]   # SOME/IP build_tx wraps mutated payload
+      generator:
+        type: none
+        rx_timeout_s: 0.05
+
+  rules:
+    # When we receive an OfferService entry from SOME/IP-SD, send a SOME/IP request.
+    - id: offer_triggers_request
+      cooldown_s: 0.2
+      when:
+        channel_id: sd
+        event: rx
+        match:
+          - path: parsed.fields.sd_entries.0.type_name
+            op: eq
+            value: OfferService
+      then:
+        - action: send
+          channel_id: someip
+          mutated_hex: "01020304"

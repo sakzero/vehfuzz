@@ -151,6 +151,8 @@ class OrchestratorRuleConfig(TypedDict, total=False):
     id: Required[str]
     when: dict[str, Any]
     then: list[dict[str, Any]]
+    cooldown_s: float
+    max_matches: int
 
 
 class OrchestratorCampaignConfig(TypedDict, total=False):

@@ -168,6 +168,12 @@ def run_campaign(
                 if enabled and not isinstance(generator.mutators, list):
                     raise ValueError(f"channel {channel_id}: generator.mutators must be a list")
 
+                queue_maxsize = int(ch.get("queue_maxsize", 1000))
+                if queue_maxsize <= 0:
+                    queue_maxsize = 1000
+
+                import queue as _queue
+
                 channels.append(
                     ChannelRuntime(
                         channel_id=channel_id,
@@ -177,6 +183,8 @@ def run_campaign(
                         seeds=seeds,
                         protocol_type=proto_type,
                         generator=generator,
+                        queue_maxsize=queue_maxsize,
+                        cmd_q=_queue.Queue(maxsize=queue_maxsize),
                     )
                 )
 
@@ -189,11 +197,27 @@ def run_campaign(
                     raise ValueError("rule requires id")
                 when = r.get("when", {}) or {}
                 then = r.get("then", []) or []
+                cooldown_s = float(r.get("cooldown_s", 0.0))
+                max_matches = r.get("max_matches")
+                max_matches_i: int | None = None
+                if max_matches is not None:
+                    try:
+                        max_matches_i = int(max_matches)
+                    except Exception:
+                        max_matches_i = None
                 if not isinstance(when, dict):
                     raise ValueError(f"rule {rid}: when must be a mapping")
                 if not isinstance(then, list):
                     raise ValueError(f"rule {rid}: then must be a list")
-                rules.append(Rule(rule_id=rid, when=when, then=[t for t in then if isinstance(t, dict)]))
+                rules.append(
+                    Rule(
+                        rule_id=rid,
+                        when=when,
+                        then=[t for t in then if isinstance(t, dict)],
+                        cooldown_s=max(0.0, cooldown_s),
+                        max_matches=(max_matches_i if max_matches_i is None or max_matches_i >= 0 else None),
+                    )
+                )
 
             orch = Orchestrator(
                 run_id=run_id,

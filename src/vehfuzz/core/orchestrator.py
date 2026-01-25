@@ -94,11 +94,56 @@ def _get_path(event: dict[str, Any], path: str) -> Any:
     """
     cur: Any = event
     for part in path.split("."):
-        if isinstance(cur, dict) and part in cur:
-            cur = cur[part]
-            continue
+        if isinstance(cur, dict):
+            if part in cur:
+                cur = cur[part]
+                continue
+            return None
+        if isinstance(cur, list):
+            if part.isdigit():
+                idx = int(part)
+                if 0 <= idx < len(cur):
+                    cur = cur[idx]
+                    continue
+            return None
         return None
     return cur
+
+
+def _match_op(actual: Any, *, op: str, expected: Any | None = None) -> bool:
+    op = str(op or "eq").lower().strip()
+    if op == "exists":
+        return actual is not None
+    if op == "not_exists":
+        return actual is None
+    if op == "eq":
+        return actual == expected
+    if op == "ne":
+        return actual != expected
+    if op in ("gt", "gte", "lt", "lte"):
+        try:
+            a = float(actual)
+            b = float(expected)
+        except (TypeError, ValueError):
+            return False
+        if op == "gt":
+            return a > b
+        if op == "gte":
+            return a >= b
+        if op == "lt":
+            return a < b
+        return a <= b
+    if op == "contains":
+        if actual is None or expected is None:
+            return False
+        return str(expected) in str(actual)
+    if op == "in":
+        if expected is None:
+            return False
+        if isinstance(expected, (list, tuple, set)):
+            return actual in expected
+        return False
+    return False
 
 
 @dataclass(frozen=True)
@@ -106,6 +151,8 @@ class Rule:
     rule_id: str
     when: dict[str, Any]
     then: list[dict[str, Any]]
+    cooldown_s: float = 0.0
+    max_matches: int | None = None
 
 
 @dataclass
@@ -162,6 +209,7 @@ class ChannelRuntime:
     seeds: list[Message]
     protocol_type: str
     generator: ChannelGenerator = field(default_factory=ChannelGenerator)
+    queue_maxsize: int = 1000
 
     cmd_q: queue.Queue[Command] = field(default_factory=queue.Queue)
     worker: threading.Thread | None = None
@@ -204,6 +252,10 @@ class Orchestrator:
 
         self._bus: queue.Queue[dict[str, Any]] = queue.Queue()
         self._stop_evt = threading.Event()
+
+        self._rule_last_fire: dict[str, float] = {}
+        self._rule_matches: dict[str, int] = {}
+        self._rule_suppressed: dict[str, int] = {}
 
     def _log(self, event: dict[str, Any]) -> None:
         self._events.log(event)
@@ -438,6 +490,23 @@ class Orchestrator:
             if not _match_subset(actual_fields, when["fields"]):
                 return False
 
+        # Path-based matchers: list of {path, op, value}
+        matchers = when.get("match")
+        if matchers is not None:
+            if not isinstance(matchers, list):
+                return False
+            for m in matchers:
+                if not isinstance(m, dict):
+                    return False
+                path = str(m.get("path", "")).strip()
+                if not path:
+                    return False
+                op = str(m.get("op", "eq")).strip()
+                expected = m.get("value")
+                actual = _get_path(event, path)
+                if not _match_op(actual, op=op, expected=expected):
+                    return False
+
         return True
 
     def _execute_action(self, *, rule: Rule, action: dict[str, Any], trigger_event: dict[str, Any], correlation_id: str) -> None:
@@ -499,6 +568,16 @@ class Orchestrator:
                         mutated = bytes.fromhex(mutated_hex)
                     except ValueError:
                         mutated = None
+            elif "mutated_from_event" in action:
+                path = str(action.get("mutated_from_event", "")).strip()
+                v = _get_path(trigger_event, path) if path else None
+                if isinstance(v, str):
+                    try:
+                        mutated = bytes.fromhex(v)
+                    except ValueError:
+                        mutated = None
+                elif isinstance(v, bytes):
+                    mutated = v
             elif "mutated_from_context" in action:
                 k = str(action.get("mutated_from_context", "")).strip()
                 v = self._context.get(k)
@@ -520,15 +599,51 @@ class Orchestrator:
             if meta_overrides is not None and not isinstance(meta_overrides, dict):
                 meta_overrides = None
 
-            target.cmd_q.put(
-                SendCommand(
-                    correlation_id=correlation_id,
-                    origin_rule_id=rule.rule_id,
-                    mutated=mutated,
-                    seed_index=seed_index,
-                    meta_overrides=meta_overrides,
+            meta = dict(meta_overrides or {})
+            meta_from_event = action.get("meta_overrides_from_event")
+            if isinstance(meta_from_event, dict):
+                for k, path in meta_from_event.items():
+                    if not isinstance(k, str) or not isinstance(path, str):
+                        continue
+                    meta[k] = _get_path(trigger_event, path)
+            meta_from_context = action.get("meta_overrides_from_context")
+            if isinstance(meta_from_context, dict):
+                for k, ctx_key in meta_from_context.items():
+                    if not isinstance(k, str) or not isinstance(ctx_key, str):
+                        continue
+                    meta[k] = self._context.get(ctx_key)
+            meta_overrides = meta or None
+
+            try:
+                if int(target.queue_maxsize) > 0 and target.cmd_q.qsize() >= int(target.queue_maxsize):
+                    raise queue.Full
+                target.cmd_q.put_nowait(
+                    SendCommand(
+                        correlation_id=correlation_id,
+                        origin_rule_id=rule.rule_id,
+                        mutated=mutated,
+                        seed_index=seed_index,
+                        meta_overrides=meta_overrides,
+                    )
                 )
-            )
+            except queue.Full:
+                self._log(
+                    {
+                        "run_id": self._run_id,
+                        "campaign": self._campaign_name,
+                        "ts": _utc_ts(),
+                        "event": "action",
+                        "action": "send",
+                        "correlation_id": correlation_id,
+                        "rule_id": rule.rule_id,
+                        "target_channel_id": channel_id,
+                        "mutated_len": len(mutated),
+                        "mutated_hex": mutated.hex(),
+                        "dropped": True,
+                        "drop_reason": "channel_queue_full",
+                    }
+                )
+                return
             self._log(
                 {
                     "run_id": self._run_id,
@@ -564,8 +679,21 @@ class Orchestrator:
                 for rule in self._rules:
                     if not self._match_rule(rule, evt):
                         continue
+
+                    now = time.time()
+                    last = self._rule_last_fire.get(rule.rule_id)
+                    if last is not None and rule.cooldown_s and (now - last) < float(rule.cooldown_s):
+                        self._rule_suppressed[rule.rule_id] = self._rule_suppressed.get(rule.rule_id, 0) + 1
+                        continue
+                    count = self._rule_matches.get(rule.rule_id, 0)
+                    if rule.max_matches is not None and count >= int(rule.max_matches):
+                        self._rule_suppressed[rule.rule_id] = self._rule_suppressed.get(rule.rule_id, 0) + 1
+                        continue
+
                     triggers += 1
                     correlation_id = str(uuid.uuid4())
+                    self._rule_last_fire[rule.rule_id] = now
+                    self._rule_matches[rule.rule_id] = count + 1
                     # Log match
                     self._log(
                         {
@@ -591,7 +719,10 @@ class Orchestrator:
             self._stop_evt.set()
             for c in self._channels.values():
                 c.stop_evt.set()
-                c.cmd_q.put(StopCommand())
+                try:
+                    c.cmd_q.put_nowait(StopCommand())
+                except queue.Full:
+                    pass
             for c in self._channels.values():
                 if c.worker is not None:
                     c.worker.join(timeout=2.0)
@@ -624,6 +755,10 @@ class Orchestrator:
             "engine": "orchestrator",
             "duration_s": max(0.0, time.time() - start),
             "rules": {"count": len(self._rules), "matches": triggers},
+            "rules_detail": {
+                "matches": dict(self._rule_matches),
+                "suppressed": dict(self._rule_suppressed),
+            },
             "channels": channels_summary,
             "context": self._context.snapshot(),
             "stats": {
