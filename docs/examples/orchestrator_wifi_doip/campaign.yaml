@@ -1,0 +1,49 @@
+campaign:
+  name: orchestrator_wifi_doip
+  engine: orchestrator
+  duration_s: 10
+
+  # Two-channel example (Wi-Fi observed via PCAP replay -> trigger UDS send on another channel).
+  #
+  # - The Wi-Fi channel "listens" by replaying packets from a PCAP file (no hardware required).
+  # - The "doip" channel uses a null adapter by default so the demo runs without a live ECU.
+  #   Replace it with adapter.type=doip when integrating with a real target (see doip examples).
+  channels:
+    - id: wifi
+      protocol: wifi
+      target:
+        adapter:
+          type: pcap_replay
+          path: ../../../samples/sample_eth.pcap
+          loop: false
+          delay_s: 0.0
+      generator:
+        type: none
+        rx_timeout_s: 0.05
+
+    - id: doip
+      protocol: uds
+      target:
+        adapter:
+          type: null
+      seed:
+        type: inline_hex
+        values: [""]
+      generator:
+        type: none
+        rx_timeout_s: 0.05
+
+  rules:
+    - id: wifi_ipv4_triggers_uds_send
+      cooldown_s: 0.2
+      when:
+        channel_id: wifi
+        event: rx
+        match:
+          - path: parsed.flow_key
+            op: contains
+            value: "ipv4:"
+      then:
+        - action: send
+          channel_id: doip
+          mutated_hex: "02f190"

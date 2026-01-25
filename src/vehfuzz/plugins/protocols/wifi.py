@@ -497,6 +497,7 @@ def _parse_ethernet_ipv4(pkt: bytes) -> ParsedMessage:
             ok=out.ok,
             encrypted=out.encrypted,
             reason=out.reason,
+            flow_key=out.flow_key,
             fields=out.fields,
             payload=ByteRange(ip_off + out.payload.offset, out.payload.length),
         )

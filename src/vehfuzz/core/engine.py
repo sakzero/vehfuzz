@@ -125,6 +125,8 @@ def run_campaign(
                 adapter_cfg = target.get("adapter", {}) or {}
                 if not isinstance(adapter_cfg, dict):
                     raise ValueError(f"channel {channel_id}: target.adapter must be a mapping")
+                adapter_cfg = dict(adapter_cfg)
+                adapter_cfg.setdefault("__config_dir", str(config_dir))
                 adapter_type = str(adapter_cfg.get("type", "null")).lower()
                 adapter = create_adapter(adapter_type, adapter_cfg)
 
